@@ -117,6 +117,8 @@ agents.md
 cli.md
 mcp.md
 configuration.md
+development_workflow.md
+getting_started.md
 demo.md
 about_the_docs.md
 ../CONTRIBUTING.md
