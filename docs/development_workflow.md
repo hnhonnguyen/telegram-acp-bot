@@ -14,7 +14,8 @@ make qa
 make test
 ```
 
-CI skips Python linting and tests for Markdown-only changes. Workflow linting runs only when files under `.github/workflows/` change.
+CI runs workflow linting, QA, and tests for every pull request and push to
+`main`; Markdown-only changes are not skipped.
 
 If `prek` is not installed, install it once with:
 
@@ -57,16 +58,20 @@ uvx pypi-attestations verify pypi \
 
 ## Preview documentation in pull requests
 
-When docs files change in a PR, CI deploys a preview to:
-
-```text
-https://mgaitan.github.io/telegram-acp-bot/_preview/pr-<PR_NUMBER>/
-```
-
-If needed, dispatch docs publishing manually:
+Pull requests build the documentation in CI but do not publish a preview
+automatically. To publish a preview manually, dispatch the workflow with the
+pull request number:
 
 ```bash
-gh workflow run cd.yml --ref main
+gh workflow run cd.yml --ref main \
+  -f deploy_target=preview \
+  -f pr_number=<PR_NUMBER>
+```
+
+The preview is published under:
+
+```bash
+https://mgaitan.github.io/telegram-acp-bot/_preview/
 ```
 
 `gh` authentication can use {term}`GH_TOKEN`.

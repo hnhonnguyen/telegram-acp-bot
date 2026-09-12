@@ -17,7 +17,7 @@ This resolves dependencies and creates the local virtual environment.
 If this project includes a CLI command:
 
 ```bash
-uv run acp-bot --help
+uv run telegram-acp-bot --help
 ```
 
 When invoking modules directly from source, set {term}`PYTHONPATH` so imports resolve cleanly:
