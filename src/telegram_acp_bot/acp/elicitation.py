@@ -43,9 +43,9 @@ def elicitation_questions(schema: ElicitationSchema) -> tuple[ElicitationQuestio
 def elicitation_content(
     questions: tuple[ElicitationQuestion, ...],
     answers: Mapping[str, tuple[str, ...]],
-) -> dict[str, object]:
+) -> dict[str, str | list[str]]:
     """The `content` the agent asked for: one value per single choice, a list per multi choice."""
-    content: dict[str, object] = {}
+    content: dict[str, str | list[str]] = {}
     for question in questions:
         values = answers[question.field]
         content[question.field] = list(values) if question.multiple else values[0]

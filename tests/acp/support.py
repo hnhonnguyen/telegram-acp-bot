@@ -11,8 +11,7 @@ from typing import cast
 from urllib.parse import quote
 
 import pytest
-from acp import RequestError, text_block
-from acp.helpers import update_available_commands
+from acp import RequestError
 from acp.schema import (
     AgentCapabilities,
     AgentMessageChunk,
@@ -36,6 +35,7 @@ from acp.schema import (
     ToolCallStart,
 )
 
+from telegram_acp_bot.acp.compat import text_block, update_available_commands
 from telegram_acp_bot.acp.service import AGENT_EXIT_NOTICE, AcpAgentService, _AcpClient, _PendingPermission
 from telegram_acp_bot.acp.models import (
     AgentActivityBlock,

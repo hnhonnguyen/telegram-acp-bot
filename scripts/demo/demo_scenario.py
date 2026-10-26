@@ -4,7 +4,7 @@ import base64
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, Literal
 
 STEP_KIND_SEND_NOW = "click_send_now"
 STEP_KIND_RESUME_CHOICE = "click_resume_choice"
@@ -181,7 +181,7 @@ def _parse_assets(base_dir: Path, raw_assets: dict[str, dict[str, Any]]) -> dict
         kind = str(raw.get("kind", "")).strip().lower()
         if kind not in {ASSET_KIND_IMAGE, ASSET_KIND_FILE}:
             raise ValueError(UNKNOWN_ASSET_KIND_MESSAGE)
-        normalized_kind = cast(Literal["image", "file"], kind)
+        normalized_kind = kind
         relative_path = Path(str(raw["path"]))
         asset_path = (base_dir / relative_path).resolve()
         assets[asset_id] = ScenarioAsset(

@@ -693,8 +693,13 @@ async def test_acp_client_unsupported_ext_methods_raise():
     client = make_client()
     with pytest.raises(RequestError):
         await client.ext_method("x", {})
-    with pytest.raises(RequestError):
-        await client.ext_notification("x", {})
+
+
+async def test_acp_client_ext_notification_silently_ignored():
+    client = make_client()
+    await client.ext_notification("_cognition.ai/agent_stopped", {})
+    await client.ext_notification("_cognition.ai/compaction", {})
+    await client.ext_notification("any/unknown", {})
 
 
 async def test_acp_client_reports_available_commands_with_hints():

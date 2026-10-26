@@ -21,7 +21,7 @@ from telegram_acp_bot.telegram.models import _QueuedVerboseBlock, _VerboseActivi
 if TYPE_CHECKING:
     from telegram_acp_bot.telegram.bridge import TelegramBridge
 
-VERBOSE_STREAM_TICK_SECONDS = 0.12
+VERBOSE_STREAM_TICK_SECONDS = 1.0
 
 logger = logging.getLogger(__name__)
 

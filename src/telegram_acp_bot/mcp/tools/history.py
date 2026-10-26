@@ -4,8 +4,7 @@ from __future__ import annotations
 
 from typing import cast
 
-from mcp.server.fastmcp import FastMCP
-
+from telegram_acp_bot.mcp.compat import FastMCP
 from telegram_acp_bot.mcp.context import resolve_request_context
 from telegram_acp_bot.mcp.state import MAX_GROUP_HISTORY_PER_CHAT, load_group_history
 

@@ -16,7 +16,8 @@ from tests.mcp.support import (
 )
 
 
-def test_resolve_request_context_reports_missing_token_by_default():
+def test_resolve_request_context_reports_missing_token_by_default(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv(TOKEN_ENV, raising=False)
     result = mcp_channel._resolve_request_context(session_id="s1")
     assert result == f"missing {TOKEN_ENV}"
 

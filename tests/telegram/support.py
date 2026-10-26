@@ -262,7 +262,9 @@ class NotModifiedAwareBot(DummyBot):
 class DummyCallbackQuery:
     def __init__(self, data: str) -> None:
         self.data = data
-        self.message = SimpleNamespace(text="Permission required\nRun ls", chat=SimpleNamespace(id=TEST_CHAT_ID))
+        self.message: SimpleNamespace | None = SimpleNamespace(
+            text="Permission required\nRun ls", chat=SimpleNamespace(id=TEST_CHAT_ID)
+        )
         self.answers: list[str] = []
         self.reply_markup_cleared = False
         self.edited_text: str | None = None

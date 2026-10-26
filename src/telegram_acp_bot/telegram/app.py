@@ -20,7 +20,13 @@ def build_application(
 ) -> Application:
     # Permission prompts are awaited inside message handlers, so callback queries
     # must be processed concurrently to avoid deadlocking the update loop.
-    builder = Application.builder().token(config.token).rate_limiter(AIORateLimiter()).concurrent_updates(True)
+    # max_retries=3: when Telegram returns RetryAfter (flood control),
+    # the rate limiter waits the requested seconds and retries up to 3
+    # times instead of dropping the message immediately (the default
+    # max_retries=0 causes silent message loss).
+    builder = (
+        Application.builder().token(config.token).rate_limiter(AIORateLimiter(max_retries=3)).concurrent_updates(True)
+    )
     if scheduler is not None:
         builder = builder.post_init(_post_init_factory(scheduler)).post_shutdown(_post_shutdown_factory(scheduler))
     app = builder.build()

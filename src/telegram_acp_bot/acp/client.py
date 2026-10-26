@@ -405,7 +405,7 @@ class _AcpClient:
         del path, session_id, limit, line, kwargs
         raise RequestError.method_not_found("fs/read_text_file")
 
-    async def create_terminal(  # noqa: PLR0913
+    async def create_terminal(  # noqa: PLR0913,PLR0917
         self,
         command: str,
         session_id: str,
@@ -444,4 +444,3 @@ class _AcpClient:
 
     async def ext_notification(self, method: str, params: dict[str, object]) -> None:
         del method, params
-        raise RequestError.method_not_found("ext/notification")

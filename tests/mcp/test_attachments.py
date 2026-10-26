@@ -399,7 +399,8 @@ async def test_send_attachment_sends_multiple_files(tmp_path: Path, monkeypatch:
     assert result["ok"] is True
     assert result["count"] == len(attachments)
     assert "delivered_as" not in result
-    kinds = [item["delivered_as"] for item in result["delivered"]]
+    delivered = cast(list[dict[str, object]], result["delivered"])
+    kinds = [item["delivered_as"] for item in delivered]
     assert kinds == ["photo", "document"]
     bot.send_photo.assert_awaited_once()
     bot.send_document.assert_awaited_once()

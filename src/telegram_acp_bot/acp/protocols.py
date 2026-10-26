@@ -51,7 +51,8 @@ class AcpSpawnFn(Protocol):
 class ProcessLike(Protocol):
     """Subset of process API used by service shutdown logic."""
 
-    returncode: int | None
+    @property
+    def returncode(self) -> int | None: ...
 
     def terminate(self) -> None: ...
 

@@ -5,12 +5,10 @@ from __future__ import annotations
 import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import cast
 
-from mcp.server.fastmcp import FastMCP
-
+from telegram_acp_bot.mcp.compat import FastMCP
 from telegram_acp_bot.mcp.context import resolve_request_context
-from telegram_acp_bot.scheduled_tasks import ACP_SCHEDULED_TASKS_DB_ENV, ScheduledTaskMode, ScheduledTaskStore
+from telegram_acp_bot.scheduled_tasks import ACP_SCHEDULED_TASKS_DB_ENV, ScheduledTaskStore
 from telegram_acp_bot.scheduled_tasks.store import parse_utc_timestamp
 
 MISSING_SCHEDULED_DB_ERROR = f"missing {ACP_SCHEDULED_TASKS_DB_ENV}"
@@ -31,7 +29,7 @@ def register_scheduling_tools(mcp: FastMCP) -> None:
     )(schedule_task)
 
 
-async def schedule_task(  # noqa: PLR0911,PLR0913
+async def schedule_task(  # noqa: PLR0911,PLR0913,PLR0917
     mode: str,
     run_at: str | None = None,
     delay_seconds: int | None = None,
@@ -72,7 +70,7 @@ async def schedule_task(  # noqa: PLR0911,PLR0913
     task = store.create_task(
         chat_id=context.chat_id,
         session_id=context.session_id,
-        mode=cast(ScheduledTaskMode, mode),
+        mode=mode,
         prompt_text=prompt_text,
         notify_text=notify_text,
         run_at=run_at_dt,

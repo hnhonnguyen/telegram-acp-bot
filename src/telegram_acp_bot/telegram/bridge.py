@@ -51,7 +51,6 @@ from telegram_acp_bot.acp.models import (
     ElicitationRequest,
     FilePayload,
     ImagePayload,
-    PermissionDecisionAction,
     PermissionRequest,
     PromptFile,
     PromptImage,
@@ -533,7 +532,8 @@ class TelegramBridge:
                 chat_id=chat_id,
                 workspace=parsed_args.workspace,
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
+            logger.exception("Failed to list resumable sessions for chat_id=%s", chat_id)
             await self._reply(update, f"Failed to list resumable sessions: {exc}")
             return
         if candidates is None:
@@ -805,7 +805,8 @@ class TelegramBridge:
                 chat_id=chat_id,
                 workspace=workspace,
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
+            logger.exception("Failed to list resumable sessions for chat_id=%s", chat_id)
             await self._reply(update, f"Failed to list resumable sessions: {exc}")
             return
         if candidates is None:
@@ -1220,7 +1221,7 @@ class TelegramBridge:
                 accepted = await self._agent_service.respond_permission_request(
                     chat_id=chat_id,
                     request_id=request_id,
-                    action=cast(PermissionDecisionAction, raw_action),
+                    action=raw_action,
                 )
                 if not accepted:
                     logger.warning("Permission callback rejected: request_id=%s chat_id=%s", request_id, chat_id)

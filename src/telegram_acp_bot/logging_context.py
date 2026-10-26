@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from datetime import UTC, datetime
@@ -60,7 +60,7 @@ def configure_logging(
 
 
 @contextmanager
-def bind_log_context(**fields: object) -> Iterator[None]:
+def bind_log_context(**fields: object) -> Generator[None]:
     """Temporarily bind contextual fields to log records in the current task."""
 
     current = _log_context.get() or {}

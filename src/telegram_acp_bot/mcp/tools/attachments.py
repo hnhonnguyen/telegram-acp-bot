@@ -12,12 +12,12 @@ from io import BytesIO
 from pathlib import Path
 from typing import cast
 
-from mcp.server.fastmcp import FastMCP
 from telegram import Bot, InputFile
 from telethon import TelegramClient
 from telethon.tl import types
 
 from telegram_acp_bot.agent_identity import DEFAULT_AGENT_NAME
+from telegram_acp_bot.mcp.compat import FastMCP
 from telegram_acp_bot.mcp.context import RequestContext, resolve_request_context
 from telegram_acp_bot.mcp.state import AGENT_NAME_ENV
 from telegram_acp_bot.mcp.tools.mtproto import mtproto_client

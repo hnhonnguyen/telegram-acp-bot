@@ -32,6 +32,7 @@ from acp import (
 )
 from acp.interfaces import Client
 from acp.schema import (
+    AcpMcpServer,
     AgentCapabilities,
     AudioContentBlock,
     EmbeddedResourceContentBlock,
@@ -53,7 +54,7 @@ from acp.schema import (
     TextContentBlock,
     ToolKind,
 )
-from demo_scenario import AgentRoute, DemoScenario, ScenarioAsset, load_demo_scenario
+from demo_scenario import AgentRoute, DemoScenario, ScenarioAsset, load_demo_scenario  # ty: ignore[unresolved-import]
 from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
@@ -66,7 +67,7 @@ NOTIFICATION_FLUSH_DELAY_SECONDS = 0.05
 PromptBlock = (
     TextContentBlock | ImageContentBlock | AudioContentBlock | ResourceContentBlock | EmbeddedResourceContentBlock
 )
-McpServer = HttpMcpServer | SseMcpServer | McpServerStdio
+McpServer = HttpMcpServer | SseMcpServer | AcpMcpServer | McpServerStdio
 
 
 @dataclass(slots=True)
@@ -112,10 +113,11 @@ class FakeDemoAcpAgent(Agent):
     async def new_session(
         self,
         cwd: str,
+        additional_directories: list[str] | None = None,
         mcp_servers: list[McpServer] | None = None,
         **kwargs: object,
     ) -> NewSessionResponse:
-        del mcp_servers, kwargs
+        del additional_directories, mcp_servers, kwargs
         session_id = str(uuid4())
         self._sessions[session_id] = _SessionState(cwd=self._resolved_cwd(cwd), cancel_event=asyncio.Event())
         return NewSessionResponse(session_id=session_id)
@@ -125,16 +127,17 @@ class FakeDemoAcpAgent(Agent):
         cwd: str,
         session_id: str,
         mcp_servers: list[McpServer] | None = None,
+        additional_directories: list[str] | None = None,
         **kwargs: object,
     ) -> LoadSessionResponse:
-        del mcp_servers, kwargs
+        del mcp_servers, additional_directories, kwargs
         self._sessions[session_id] = _SessionState(cwd=self._resolved_cwd(cwd), cancel_event=asyncio.Event())
         return LoadSessionResponse()
 
     async def list_sessions(
         self,
-        cursor: str | None = None,
         cwd: str | None = None,
+        cursor: str | None = None,
         **kwargs: object,
     ) -> ListSessionsResponse:
         del cursor, kwargs
@@ -162,7 +165,7 @@ class FakeDemoAcpAgent(Agent):
         ]
         return ListSessionsResponse(sessions=sessions)
 
-    async def set_session_mode(self, mode_id: str, session_id: str, **kwargs: object) -> None:
+    async def set_session_mode(self, session_id: str, mode_id: str, **kwargs: object) -> None:
         del mode_id, session_id, kwargs
 
     async def set_session_model(self, model_id: str, session_id: str, **kwargs: object) -> None:
@@ -176,8 +179,8 @@ class FakeDemoAcpAgent(Agent):
 
     async def prompt(
         self,
-        prompt: list[PromptBlock],
         session_id: str,
+        prompt: list[PromptBlock],
         message_id: str | None = None,
         **kwargs: object,
     ) -> PromptResponse:
@@ -221,22 +224,24 @@ class FakeDemoAcpAgent(Agent):
 
     async def fork_session(
         self,
-        cwd: str,
         session_id: str,
+        cwd: str,
+        additional_directories: list[str] | None = None,
         mcp_servers: list[McpServer] | None = None,
         **kwargs: object,
     ) -> Never:
-        del cwd, session_id, mcp_servers, kwargs
+        del cwd, session_id, additional_directories, mcp_servers, kwargs
         raise RequestError.method_not_found("session/fork")
 
     async def resume_session(
         self,
-        cwd: str,
         session_id: str,
+        cwd: str,
+        additional_directories: list[str] | None = None,
         mcp_servers: list[McpServer] | None = None,
         **kwargs: object,
     ) -> Never:
-        del cwd, session_id, mcp_servers, kwargs
+        del cwd, session_id, additional_directories, mcp_servers, kwargs
         raise RequestError.method_not_found("session/resume")
 
     async def cancel(self, session_id: str, **kwargs: object) -> None:
@@ -409,7 +414,7 @@ async def _main() -> int:
     args = parse_args()
     logging.basicConfig(level=getattr(logging, str(args.log_level).upper(), logging.INFO))
     scenario = load_demo_scenario(args.scenario)
-    agent = FakeDemoAcpAgent(scenario)
+    agent = FakeDemoAcpAgent(scenario)  # ty: ignore[call-non-callable]
     await run_agent(agent, use_unstable_protocol=True)
     return 0
 

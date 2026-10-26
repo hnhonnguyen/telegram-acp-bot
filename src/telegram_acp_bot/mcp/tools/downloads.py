@@ -14,10 +14,10 @@ import os
 from pathlib import Path
 from typing import cast
 
-from mcp.server.fastmcp import FastMCP
 from telethon import TelegramClient, hints
 from telethon.tl.custom import Message
 
+from telegram_acp_bot.mcp.compat import FastMCP
 from telegram_acp_bot.mcp.context import resolve_request_context
 from telegram_acp_bot.mcp.tools.attachments import resolve_media_target
 from telegram_acp_bot.mcp.tools.mtproto import mtproto_client
