@@ -52,8 +52,9 @@ SCHEDULE_TASK_DESCRIPTION = (
     "Tasks created here persist across session resets, bot restarts, and engine switches. "
     "Provide exactly one of: `cron` (UTC expression; 5 fields min hour dom month dow, or 6 fields "
     "with seconds last) for a recurring task, or `run_at`/`delay_*` for a one-shot. "
-    "`notify` sends text; `prompt_agent` re-prompts the live session and fails if no session is "
-    "active. Always confirm the schedule to the user.\n\n" + CHANNEL_POLICY_REMINDER
+    "`notify` sends text; `prompt_agent` re-prompts the chat's session, starting a new session "
+    "in the default workspace when none is active. "
+    "Always confirm the schedule to the user.\n\n" + CHANNEL_POLICY_REMINDER
 )
 LIST_SCHEDULED_TASKS_DESCRIPTION = (
     "List durable scheduled reminders for the current chat. Use it before updating or cancelling a task."

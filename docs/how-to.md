@@ -173,7 +173,7 @@ Single-line prompts still work too:
 /schedule 2h Generate the weekly summary report
 ```
 
-If no active session exists when the scheduled time arrives, the bot will report that the task could not be run automatically.
+If no active session exists when the scheduled time arrives, the bot starts a new one in the default workspace before sending the prompt. If the agent process cannot be started, the bot reports that the task could not be run automatically.
 
 ## 9. Inspect and cancel scheduled follow-ups
 

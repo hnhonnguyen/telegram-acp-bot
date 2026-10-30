@@ -3059,10 +3059,6 @@ class TelegramBridge:
         app = self._app
         if app is None:
             raise ScheduledTaskExecutionError(APP_NOT_RUNNING_ERROR)
-        if self._active_session_context(chat_id=task.chat_id) is None:
-            message = "Could not run automatically: no active session."
-            await self._send_scheduled_status_message(task=task, text=message)
-            raise ScheduledTaskExecutionError(message)
         prompt_text = (task.prompt_text or "").strip()
         if not prompt_text:
             message = "Could not run automatically: scheduled prompt is empty."
@@ -3071,6 +3067,7 @@ class TelegramBridge:
         reply_to_message_id = self._scheduled_reply_to(task)
         lock = await self._acquire_scheduled_prompt_lock(task.chat_id)
         try:
+            await self._ensure_scheduled_session(task=task)
             session_context = self._active_session_context(chat_id=task.chat_id)
             session_id = None if session_context is None else session_context[0]
             with bind_log_context(chat_id=task.chat_id, session_id=session_id):
@@ -3107,6 +3104,23 @@ class TelegramBridge:
                 raise ScheduledTaskExecutionError(message) from exc
         finally:
             lock.release()
+
+    async def _ensure_scheduled_session(self, *, task: ScheduledTask) -> None:
+        if self._active_session_context(chat_id=task.chat_id) is not None:
+            return
+        workspace = self._config.default_workspace
+        try:
+            with bind_log_context(chat_id=task.chat_id):
+                logger.info(
+                    "Starting session for scheduled prompt: chat_id=%s workspace=%s",
+                    task.chat_id,
+                    workspace,
+                )
+                await self._agent_service.new_session(chat_id=task.chat_id, workspace=workspace)
+        except Exception as exc:
+            message = f"Could not run automatically: failed to start session: {exc}"
+            await self._send_scheduled_status_message(task=task, text=message)
+            raise ScheduledTaskExecutionError(message) from exc
 
     async def _acquire_scheduled_prompt_lock(self, chat_id: int) -> asyncio.Lock:
         lock = self._chat_prompt_lock(chat_id)

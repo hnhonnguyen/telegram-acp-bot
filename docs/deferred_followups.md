@@ -21,7 +21,7 @@ There are two execution modes:
 
 `notify` sends a stored text later. It does not call the agent, so it is the most durable choice for plain reminders.
 
-`prompt_agent` re-enters the agent flow later with a stored prompt and sends the answer back to Telegram. It still needs a live ACP session when the task fires.
+`prompt_agent` re-enters the agent flow later with a stored prompt and sends the answer back to Telegram. It reuses the chat's ACP session and starts a new one when none is active.
 
 The agent manages tasks through four MCP tools:
 
@@ -79,7 +79,7 @@ The first occurrence is strictly after the current time. After each run, the sch
 
 `notify` does not depend on an ACP session. It survives `/clear`, `/stop`, process restarts, and engine changes.
 
-`prompt_agent` only runs if the chat has an active ACP session when the scheduled time arrives. The implementation reuses the chat's current live session rather than resurrecting one invisibly. If there is no session, the task reports `Could not run automatically: no active session.` and, for recurring tasks, moves on to the next occurrence. The same principle applies to delivery errors: the user sees a plain explanation rather than having the task disappear silently.
+`prompt_agent` reuses the chat's live ACP session when one exists. If none exists when the scheduled time arrives — for example after `/clear` or a bot restart — the bot starts a new session in the default workspace and then sends the stored prompt. If the session cannot be started, the task reports `Could not run automatically: failed to start session: ...` and, for recurring tasks, moves on to the next occurrence. The same principle applies to delivery errors: the user sees a plain explanation rather than having the task disappear silently.
 
 ## Routing: Which Chat, Which Message, Who Asked
 

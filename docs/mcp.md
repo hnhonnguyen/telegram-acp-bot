@@ -223,7 +223,7 @@ The first version intentionally supports only standard Telegram reaction emoji. 
 (mcp-feature-scheduling)=
 ## Schedule Tasks
 
-`schedule_task` stores a durable deferred follow-up for the current chat. Tasks live in {term}`ACP_SCHEDULED_TASKS_DB`, so they survive ACP session resets, bot restarts, and engine switches. The tool supports two execution modes: `notify` sends stored text without calling the agent; `prompt_agent` re-prompts the live ACP session when the task fires.
+`schedule_task` stores a durable deferred follow-up for the current chat. Tasks live in {term}`ACP_SCHEDULED_TASKS_DB`, so they survive ACP session resets, bot restarts, and engine switches. The tool supports two execution modes: `notify` sends stored text without calling the agent; `prompt_agent` re-prompts the chat's ACP session when the task fires, starting a new session in the default workspace when none is active.
 
 Time can be expressed in three ways:
 

@@ -44,10 +44,25 @@ UNEXPECTED_EXECUTION_ERROR = "unexpected boom"
 
 
 class ScheduledPromptService:
-    def __init__(self, *, active: bool = True, reply_text: str = "Scheduled reply") -> None:
+    def __init__(
+        self,
+        *,
+        active: bool = True,
+        reply_text: str = "Scheduled reply",
+        start_error: Exception | None = None,
+    ) -> None:
         self._active = active
         self._reply_text = reply_text
+        self._start_error = start_error
         self.prompt_calls: list[tuple[int, str]] = []
+        self.new_session_calls: list[tuple[int, Path]] = []
+
+    async def new_session(self, *, chat_id: int, workspace: Path) -> str:
+        self.new_session_calls.append((chat_id, workspace))
+        if self._start_error is not None:
+            raise self._start_error
+        self._active = True
+        return "session-new"
 
     async def prompt(self, *, chat_id: int, text: str, images=(), files=()):
         del images, files
@@ -952,18 +967,37 @@ async def test_execute_scheduled_prompt_requires_running_app():
         await bridge.execute_scheduled_task(make_task(mode="prompt_agent", prompt_text="check again"))
 
 
-async def test_execute_scheduled_prompt_reports_missing_session():
+async def test_execute_scheduled_prompt_starts_session_when_missing():
+    service = ScheduledPromptService(active=False)
     bridge = TelegramBridge(
         config=make_config(token="TOKEN", allowed_user_ids=[], workspace="."),
-        agent_service=cast(AgentService, ScheduledPromptService(active=False)),
+        agent_service=cast(AgentService, service),
     )
     bot = DummyBot()
     bridge._app = cast(Application, SimpleNamespace(bot=bot))
 
-    with pytest.raises(ScheduledTaskExecutionError, match="no active session"):
+    await bridge.execute_scheduled_task(make_task(mode="prompt_agent", prompt_text="check again"))
+
+    assert service.new_session_calls == [(TEST_CHAT_ID, Path(".").expanduser())]
+    assert service.prompt_calls == [(TEST_CHAT_ID, "check again")]
+    assert bot.sent_messages[-1]["text"] == "Scheduled reply"
+    assert bot.sent_messages[-1]["reply_to_message_id"] == ANCHOR_MESSAGE_ID
+
+
+async def test_execute_scheduled_prompt_reports_session_start_failure():
+    service = ScheduledPromptService(active=False, start_error=RuntimeError("spawn boom"))
+    bridge = TelegramBridge(
+        config=make_config(token="TOKEN", allowed_user_ids=[], workspace="."),
+        agent_service=cast(AgentService, service),
+    )
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+
+    with pytest.raises(ScheduledTaskExecutionError, match="failed to start session: spawn boom"):
         await bridge.execute_scheduled_task(make_task(mode="prompt_agent", prompt_text="check again"))
 
-    assert bot.sent_messages[-1]["text"] == "Could not run automatically: no active session."
+    assert service.prompt_calls == []
+    assert bot.sent_messages[-1]["text"] == "Could not run automatically: failed to start session: spawn boom"
     assert bot.sent_messages[-1]["reply_to_message_id"] == ANCHOR_MESSAGE_ID
 
 
