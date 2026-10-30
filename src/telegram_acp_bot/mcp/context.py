@@ -9,8 +9,10 @@ from pathlib import Path
 from telegram_acp_bot.mcp.state import (
     STATE_FILE_ENV,
     TOKEN_ENV,
+    PromptRequester,
     load_last_session_id,
     load_prompt_message_id,
+    load_prompt_requester,
     load_session_chat_map,
 )
 
@@ -21,7 +23,30 @@ class RequestContext:
     chat_id: int
     session_id: str
     prompt_message_id: int | None
+    requester: PromptRequester | None
     state_file: Path
+
+    @property
+    def source_message_id(self) -> int | None:
+        """The Telegram message that triggered the current prompt, when known."""
+
+        return self.prompt_message_id
+
+    @property
+    def requester_user_id(self) -> int | None:
+        return None if self.requester is None else self.requester.user_id
+
+    @property
+    def requester_username(self) -> str | None:
+        return None if self.requester is None else self.requester.username
+
+    @property
+    def requester_name(self) -> str | None:
+        return None if self.requester is None else self.requester.display_name
+
+    @property
+    def chat_type(self) -> str | None:
+        return None if self.requester is None else self.requester.chat_type
 
 
 def resolve_request_context(*, session_id: str | None) -> RequestContext | str:
@@ -61,5 +86,6 @@ def resolve_request_context(*, session_id: str | None) -> RequestContext | str:
         chat_id=chat_id,
         session_id=selected_session_id,
         prompt_message_id=load_prompt_message_id(state_file, selected_session_id),
+        requester=load_prompt_requester(state_file, selected_session_id),
         state_file=state_file,
     )

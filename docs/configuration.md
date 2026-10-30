@@ -298,8 +298,11 @@ ACP_TELEGRAM_CHANNEL_STATE_FILE
   injected below.
 
 ACP_SCHEDULED_TASKS_DB
-  Path to the SQLite database this instance's scheduling tool writes to. Resolved from
-  `acp.scheduled_tasks_db` (or the per-agent default), then injected.
+  Path to the SQLite database this instance's scheduling tools write to. Resolved from
+  `acp.scheduled_tasks_db` (or the per-agent default), then injected. The bot adds missing
+  schema columns automatically on startup. This database is the durable source of truth for
+  one-shot and recurring schedules; the scheduler runs inside the bot process, so tasks do
+  not fire while the bot is stopped.
 
 ACP_TELEGRAM_AGENT_NAME
   The name of the agent owning this server, used to namespace its attachment media directory

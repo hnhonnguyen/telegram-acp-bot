@@ -183,6 +183,8 @@ async def test_new_session_and_prompt(tmp_path: Path):
     assert reply is not None
     assert reply.text == "hello from acp"
     assert connection.prompt_calls == ["real-session"]
+    assert connection.prompt_blocks[0][0].text == CHANNEL_POLICY_REMINDER
+    assert connection.prompt_blocks[0][1].text == "hi"
 
 
 async def test_load_session_and_supports_session_loading(tmp_path: Path):
@@ -315,6 +317,50 @@ async def test_set_prompt_message_context_updates_state_file(tmp_path: Path):
     await service.set_prompt_message_context(session_id="latest", message_id=PROMPT_MESSAGE_ID)
 
     assert load_prompt_message_id(state_file, "latest") == PROMPT_MESSAGE_ID
+
+
+async def test_set_prompt_message_context_persists_requester(tmp_path: Path):
+    state_file = tmp_path / "channel-state.json"
+    service = AcpAgentService(SessionRegistry(), program="agent", args=[], channel_state_file=state_file)
+    requester = PromptRequester(
+        user_id=88,
+        username="alice",
+        display_name="Alice Doe",
+        chat_type="group",
+    )
+
+    await service.set_prompt_message_context(
+        session_id="latest",
+        message_id=PROMPT_MESSAGE_ID,
+        requester=requester,
+    )
+
+    assert load_prompt_requester(state_file, "latest") == requester
+
+
+async def test_set_prompt_message_context_clears_requester_on_turn_end(tmp_path: Path):
+    state_file = tmp_path / "channel-state.json"
+    service = AcpAgentService(SessionRegistry(), program="agent", args=[], channel_state_file=state_file)
+    await service.set_prompt_message_context(
+        session_id="latest",
+        message_id=PROMPT_MESSAGE_ID,
+        requester=PromptRequester(user_id=88),
+    )
+
+    await service.set_prompt_message_context(session_id="latest", message_id=None, requester=None)
+
+    assert load_prompt_requester(state_file, "latest") is None
+
+
+async def test_set_prompt_message_context_keeps_requester_when_not_provided(tmp_path: Path):
+    state_file = tmp_path / "channel-state.json"
+    service = AcpAgentService(SessionRegistry(), program="agent", args=[], channel_state_file=state_file)
+    requester = PromptRequester(user_id=88)
+    await service.set_prompt_message_context(session_id="latest", message_id=PROMPT_MESSAGE_ID, requester=requester)
+
+    await service.set_prompt_message_context(session_id="latest", message_id=PROMPT_MESSAGE_ID + 1)
+
+    assert load_prompt_requester(state_file, "latest") == requester
 
 
 async def test_set_prompt_message_context_without_state_file_is_noop():

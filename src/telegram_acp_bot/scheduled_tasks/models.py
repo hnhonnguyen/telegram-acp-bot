@@ -23,6 +23,12 @@ class ScheduledTask:
     mode: ScheduledTaskMode
     prompt_text: str | None
     notify_text: str | None
+    cron_expression: str | None
+    source_message_id: int | None
+    requester_user_id: int | None
+    requester_username: str | None
+    requester_name: str | None
+    chat_type: str | None
     run_at: datetime
     status: ScheduledTaskStatus
     attempt_count: int

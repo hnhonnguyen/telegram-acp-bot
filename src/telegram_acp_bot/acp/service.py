@@ -71,9 +71,11 @@ from telegram_acp_bot.acp.protocols import (
     _package_version,
 )
 from telegram_acp_bot.acp.session import _LiveSession, _PendingElicitation, _PendingPermission
+from telegram_acp_bot.channel_policy import CHANNEL_POLICY_REMINDER
 from telegram_acp_bot.core.session_registry import SessionRegistry
 from telegram_acp_bot.logging_context import bind_log_context, log_text_preview
 from telegram_acp_bot.mcp.state import (
+    PromptRequester,
     append_group_message,
     append_pending_media,
     load_group_history,
@@ -81,6 +83,7 @@ from telegram_acp_bot.mcp.state import (
     load_session_chat_map,
     save_last_session_id,
     save_prompt_message_id,
+    save_prompt_requester,
     save_session_chat_map,
     take_pending_media,
 )
@@ -310,7 +313,7 @@ class AcpAgentService:
         images: tuple[PromptImage, ...],
         files: tuple[PromptFile, ...],
     ) -> list[PromptContentBlock]:
-        prompt_blocks: list[PromptContentBlock] = [text_block(text)]
+        prompt_blocks: list[PromptContentBlock] = [text_block(CHANNEL_POLICY_REMINDER), text_block(text)]
         prompt_blocks.extend(
             [ImageContentBlock(data=image.data_base64, mime_type=image.mime_type, type="image") for image in images]
         )
@@ -1111,8 +1114,14 @@ class AcpAgentService:
             entries = await asyncio.to_thread(load_group_history, self._channel_state_file, chat_id=chat_id)
         return tuple(entries)
 
-    async def set_prompt_message_context(self, *, session_id: str, message_id: int | None) -> None:
-        """Persist the active Telegram prompt message id for the current turn.
+    async def set_prompt_message_context(
+        self,
+        *,
+        session_id: str,
+        message_id: int | None,
+        requester: PromptRequester | None = None,
+    ) -> None:
+        """Persist the active Telegram prompt message and requester for the current turn.
 
         While a turn is in flight (`message_id` is set) the session also becomes the
         last active one, so an MCP attachment call that omits `session_id` resolves to
@@ -1124,6 +1133,10 @@ class AcpAgentService:
             return
         async with self._channel_state_lock:
             await asyncio.to_thread(save_prompt_message_id, self._channel_state_file, session_id, message_id)
+            if requester is not None:
+                await asyncio.to_thread(save_prompt_requester, self._channel_state_file, session_id, requester)
+            elif message_id is None:
+                await asyncio.to_thread(save_prompt_requester, self._channel_state_file, session_id, None)
             if message_id is not None:
                 await asyncio.to_thread(save_last_session_id, self._channel_state_file, session_id)
 

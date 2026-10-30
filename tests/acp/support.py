@@ -49,14 +49,18 @@ from telegram_acp_bot.acp.models import (
     PromptImage,
 )
 from telegram_acp_bot.core.session_registry import SessionRegistry
+from telegram_acp_bot.channel_policy import CHANNEL_POLICY_REMINDER
 from telegram_acp_bot.logging_context import LOG_TEXT_PREVIEW_MAX_CHARS, log_text_preview
 from telegram_acp_bot.mcp.state import (
+    PromptRequester,
     load_last_session_id,
     load_pending_media,
     load_prompt_message_id,
+    load_prompt_requester,
     load_session_chat_map,
     save_last_session_id,
     save_prompt_message_id,
+    save_prompt_requester,
     save_session_chat_map,
 )
 
@@ -127,6 +131,7 @@ class FakeConnection:
         self.initialized = False
         self.cwd: str | None = None
         self.prompt_calls: list[str] = []
+        self.prompt_blocks: list[list] = []
         self.list_calls: list[tuple[str | None, str | None]] = []
         self._supports_load_session = supports_load_session
         self._supports_session_list = supports_session_list
@@ -165,6 +170,7 @@ class FakeConnection:
 
     async def prompt(self, *, session_id: str, prompt: list) -> SimpleNamespace:
         self.prompt_calls.append(session_id)
+        self.prompt_blocks.append(prompt)
         assert prompt
         assert self.client is not None
         update = AgentMessageChunk(content=text_block("hello from acp"), session_update="agent_message_chunk")
@@ -289,6 +295,7 @@ __all__ = [
     "ACP_STDIO_LIMIT_ERROR",
     "AGENT_BINARY_MISSING_ERROR",
     "AGENT_EXIT_NOTICE",
+    "CHANNEL_POLICY_REMINDER",
     "CONNECTION_CLOSED_ERROR",
     "EXPECTED_CAPTURED_FILES",
     "LOG_TEXT_PREVIEW_MAX_CHARS",
@@ -325,6 +332,7 @@ __all__ = [
     "PermissionOption",
     "PromptFile",
     "PromptImage",
+    "PromptRequester",
     "ReadvertiseCommandsConnection",
     "RequestError",
     "RequestPermissionResponse",
@@ -346,6 +354,7 @@ __all__ = [
     "load_last_session_id",
     "load_pending_media",
     "load_prompt_message_id",
+    "load_prompt_requester",
     "load_session_chat_map",
     "log_text_preview",
     "logging",
@@ -355,6 +364,7 @@ __all__ = [
     "quote",
     "save_last_session_id",
     "save_prompt_message_id",
+    "save_prompt_requester",
     "save_session_chat_map",
     "text_block",
     "update_available_commands",

@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import dataclass
 from pathlib import Path
 from tempfile import gettempdir, mkstemp
+from typing import TypedDict
 
 from telegram_acp_bot.agent_identity import DEFAULT_AGENT_NAME, agent_state_dir
 
@@ -19,6 +21,16 @@ MAX_PENDING_MEDIA_PER_CHAT = 20
 MAX_GROUP_HISTORY_PER_CHAT = 200
 GROUP_HISTORY_TEXT_MAX_CHARS = 700
 PER_AGENT_STATE_FILE_NAME = "channel-state.json"
+
+
+@dataclass(frozen=True, slots=True)
+class PromptRequester:
+    """Who asked for the current prompt and where they asked it."""
+
+    user_id: int
+    username: str | None = None
+    display_name: str | None = None
+    chat_type: str | None = None
 
 
 def default_state_file(*, pid: int) -> Path:
@@ -67,6 +79,47 @@ def load_prompt_message_id(path: Path, session_id: str) -> int | None:
     prompt_message_ids = _clean_prompt_message_ids(_load_raw_state(path).get("prompt_message_ids"))
     value = prompt_message_ids.get(session_id)
     return value if isinstance(value, int) else None
+
+
+def save_prompt_requester(path: Path, session_id: str, requester: PromptRequester | None) -> None:
+    """Persist or clear the Telegram requester of the active prompt for a session."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    existing = _load_raw_state(path)
+    payload = _base_state_payload(existing)
+
+    requesters = _clean_prompt_requesters(existing.get("prompt_requesters"))
+    if requester is None:
+        requesters.pop(session_id, None)
+    else:
+        requesters[session_id] = {
+            "user_id": requester.user_id,
+            "username": requester.username,
+            "display_name": requester.display_name,
+            "chat_type": requester.chat_type,
+        }
+    if requesters:
+        payload["prompt_requesters"] = requesters
+    else:
+        payload.pop("prompt_requesters", None)
+    _write_json_atomic(path, payload)
+
+
+def load_prompt_requester(path: Path, session_id: str) -> PromptRequester | None:
+    """Load the Telegram requester of the active prompt for a session."""
+
+    raw = _clean_prompt_requesters(_load_raw_state(path).get("prompt_requesters")).get(session_id)
+    if raw is None:
+        return None
+    username = raw.get("username")
+    display_name = raw.get("display_name")
+    chat_type = raw.get("chat_type")
+    return PromptRequester(
+        user_id=raw["user_id"],
+        username=username if isinstance(username, str) else None,
+        display_name=display_name if isinstance(display_name, str) else None,
+        chat_type=chat_type if isinstance(chat_type, str) else None,
+    )
 
 
 def save_session_chat_map(path: Path, mapping: dict[str, int]) -> None:
@@ -232,6 +285,9 @@ def _base_state_payload(existing: dict[str, object]) -> dict[str, object]:
     prompt_message_ids = _clean_prompt_message_ids(existing.get("prompt_message_ids"))
     if prompt_message_ids:
         payload["prompt_message_ids"] = prompt_message_ids
+    prompt_requesters = _clean_prompt_requesters(existing.get("prompt_requesters"))
+    if prompt_requesters:
+        payload["prompt_requesters"] = prompt_requesters
     return payload
 
 
@@ -329,3 +385,29 @@ def _clean_prompt_message_ids(raw: object) -> dict[str, int]:
     if not isinstance(raw, dict):
         return {}
     return {key: value for key, value in raw.items() if isinstance(key, str) and isinstance(value, int)}
+
+
+class _PromptRequesterPayload(TypedDict):
+    user_id: int
+    username: str | None
+    display_name: str | None
+    chat_type: str | None
+
+
+def _clean_prompt_requesters(raw: object) -> dict[str, _PromptRequesterPayload]:
+    if not isinstance(raw, dict):
+        return {}
+    cleaned: dict[str, _PromptRequesterPayload] = {}
+    for key, value in raw.items():
+        if not isinstance(key, str) or not isinstance(value, dict):
+            continue
+        user_id = value.get("user_id")
+        if not isinstance(user_id, int):
+            continue
+        cleaned[key] = {
+            "user_id": user_id,
+            "username": value.get("username") if isinstance(value.get("username"), str) else None,
+            "display_name": value.get("display_name") if isinstance(value.get("display_name"), str) else None,
+            "chat_type": value.get("chat_type") if isinstance(value.get("chat_type"), str) else None,
+        }
+    return cleaned

@@ -345,7 +345,14 @@ class PromptContextService:
         del chat_id, text, images, files
         return AgentReply(text="ok")
 
-    async def set_prompt_message_context(self, *, session_id: str, message_id: int | None) -> None:
+    async def set_prompt_message_context(
+        self,
+        *,
+        session_id: str,
+        message_id: int | None,
+        requester: object | None = None,
+    ) -> None:
+        del requester
         self.prompt_message_context.append((session_id, message_id))
 
     def get_workspace(self, *, chat_id: int) -> Path | None:

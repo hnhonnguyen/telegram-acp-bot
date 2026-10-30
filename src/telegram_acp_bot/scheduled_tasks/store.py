@@ -18,6 +18,14 @@ SQLITE_FILE_MODE = 0o600
 TIMESTAMP_TIMEZONE_REQUIRED_ERROR = "timestamp must include an explicit timezone offset"
 TIMESTAMP_AWARE_REQUIRED_ERROR = "timestamp must be timezone-aware"
 SCHEDULED_TASKS_DB_FILE_NAME = "scheduled-tasks.sqlite3"
+OPTIONAL_SCHEDULED_TASK_COLUMNS = {
+    "cron_expression": "TEXT",
+    "source_message_id": "INTEGER",
+    "requester_user_id": "INTEGER",
+    "requester_username": "TEXT",
+    "requester_name": "TEXT",
+    "chat_type": "TEXT",
+}
 
 
 def default_scheduled_tasks_db_path(*, name: str | None = None) -> Path:
@@ -75,6 +83,7 @@ class ScheduledTaskStore:
 
         self._path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS scheduled_tasks (
@@ -85,6 +94,12 @@ class ScheduledTaskStore:
                     mode TEXT NOT NULL,
                     prompt_text TEXT,
                     notify_text TEXT,
+                    cron_expression TEXT,
+                    source_message_id INTEGER,
+                    requester_user_id INTEGER,
+                    requester_username TEXT,
+                    requester_name TEXT,
+                    chat_type TEXT,
                     run_at TEXT NOT NULL,
                     status TEXT NOT NULL,
                     attempt_count INTEGER NOT NULL DEFAULT 0,
@@ -97,6 +112,7 @@ class ScheduledTaskStore:
                 )
                 """
             )
+            self._ensure_optional_columns(connection)
             connection.execute(
                 """
                 CREATE INDEX IF NOT EXISTS scheduled_tasks_due_idx
@@ -105,6 +121,13 @@ class ScheduledTaskStore:
             )
         if self._path.exists():
             os.chmod(self._path, SQLITE_FILE_MODE)
+
+    @staticmethod
+    def _ensure_optional_columns(connection: sqlite3.Connection) -> None:
+        columns = {str(row["name"]) for row in connection.execute("PRAGMA table_info(scheduled_tasks)")}
+        for name, sql_type in OPTIONAL_SCHEDULED_TASK_COLUMNS.items():
+            if name not in columns:
+                connection.execute(f"ALTER TABLE scheduled_tasks ADD COLUMN {name} {sql_type}")
 
     def create_task(  # noqa: PLR0913
         self,
@@ -116,6 +139,12 @@ class ScheduledTaskStore:
         run_at: datetime,
         prompt_text: str | None = None,
         notify_text: str | None = None,
+        cron_expression: str | None = None,
+        source_message_id: int | None = None,
+        requester_user_id: int | None = None,
+        requester_username: str | None = None,
+        requester_name: str | None = None,
+        chat_type: str | None = None,
     ) -> ScheduledTask:
         """Insert a new pending deferred task."""
 
@@ -128,6 +157,12 @@ class ScheduledTaskStore:
             mode=mode,
             prompt_text=prompt_text,
             notify_text=notify_text,
+            cron_expression=cron_expression,
+            source_message_id=source_message_id,
+            requester_user_id=requester_user_id,
+            requester_username=requester_username,
+            requester_name=requester_name,
+            chat_type=chat_type,
             run_at=run_at.astimezone(UTC),
             status="pending",
             attempt_count=0,
@@ -149,6 +184,12 @@ class ScheduledTaskStore:
                     mode,
                     prompt_text,
                     notify_text,
+                    cron_expression,
+                    source_message_id,
+                    requester_user_id,
+                    requester_username,
+                    requester_name,
+                    chat_type,
                     run_at,
                     status,
                     attempt_count,
@@ -159,7 +200,7 @@ class ScheduledTaskStore:
                     created_at,
                     updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 self._serialize_task(task),
             )
@@ -258,7 +299,7 @@ class ScheduledTaskStore:
                 """
                 SELECT id
                 FROM scheduled_tasks
-                WHERE status = 'pending' AND anchor_message_id IS NOT NULL AND run_at <= ?
+                WHERE status = 'pending' AND run_at <= ?
                 ORDER BY run_at, created_at
                 LIMIT ?
                 """,
@@ -346,6 +387,78 @@ class ScheduledTaskStore:
                 (now, now, error, task_id),
             )
 
+    def reschedule_task(self, task_id: str, *, run_at: datetime, error: str | None = None) -> bool:
+        """Return a running recurring task to `pending` with its next occurrence."""
+
+        now = format_utc_timestamp(utc_now())
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE scheduled_tasks
+                SET status = 'pending',
+                    run_at = ?,
+                    attempt_count = 0,
+                    last_error = ?,
+                    claimed_at = NULL,
+                    started_at = NULL,
+                    finished_at = NULL,
+                    updated_at = ?
+                WHERE id = ? AND status = 'running'
+                """,
+                (format_utc_timestamp(run_at), error, now, task_id),
+            )
+        return cursor.rowcount > 0
+
+    def update_task(  # noqa: PLR0913
+        self,
+        *,
+        task_id: str,
+        chat_id: int,
+        mode: ScheduledTaskMode,
+        run_at: datetime,
+        cron_expression: str | None,
+        prompt_text: str | None,
+        notify_text: str | None,
+    ) -> ScheduledTask | None:
+        """Update the schedule content of one pending task owned by *chat_id*."""
+
+        now = format_utc_timestamp(utc_now())
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            cursor = connection.execute(
+                """
+                UPDATE scheduled_tasks
+                SET mode = ?,
+                    run_at = ?,
+                    cron_expression = ?,
+                    prompt_text = ?,
+                    notify_text = ?,
+                    attempt_count = 0,
+                    last_error = NULL,
+                    claimed_at = NULL,
+                    started_at = NULL,
+                    finished_at = NULL,
+                    updated_at = ?
+                WHERE id = ? AND chat_id = ? AND status = 'pending'
+                """,
+                (
+                    mode,
+                    format_utc_timestamp(run_at),
+                    cron_expression,
+                    prompt_text,
+                    notify_text,
+                    now,
+                    task_id,
+                    chat_id,
+                ),
+            )
+            if cursor.rowcount == 0:
+                connection.commit()
+                return None
+            row = connection.execute("SELECT * FROM scheduled_tasks WHERE id = ?", (task_id,)).fetchone()
+            connection.commit()
+        return None if row is None else self._row_to_task(row)
+
     def recover_running_tasks(self) -> int:
         """Move stale `running` tasks back to `pending` after restart."""
 
@@ -423,6 +536,12 @@ class ScheduledTaskStore:
             task.mode,
             task.prompt_text,
             task.notify_text,
+            task.cron_expression,
+            task.source_message_id,
+            task.requester_user_id,
+            task.requester_username,
+            task.requester_name,
+            task.chat_type,
             format_utc_timestamp(task.run_at),
             task.status,
             task.attempt_count,
@@ -448,6 +567,12 @@ class ScheduledTaskStore:
             mode=cast(ScheduledTaskMode, str(row["mode"])),
             prompt_text=None if row["prompt_text"] is None else str(row["prompt_text"]),
             notify_text=None if row["notify_text"] is None else str(row["notify_text"]),
+            cron_expression=None if row["cron_expression"] is None else str(row["cron_expression"]),
+            source_message_id=None if row["source_message_id"] is None else int(row["source_message_id"]),
+            requester_user_id=None if row["requester_user_id"] is None else int(row["requester_user_id"]),
+            requester_username=None if row["requester_username"] is None else str(row["requester_username"]),
+            requester_name=None if row["requester_name"] is None else str(row["requester_name"]),
+            chat_type=None if row["chat_type"] is None else str(row["chat_type"]),
             run_at=parse_utc_timestamp(str(row["run_at"])),
             status=cast(ScheduledTaskStatus, str(row["status"])),
             attempt_count=int(row["attempt_count"]),

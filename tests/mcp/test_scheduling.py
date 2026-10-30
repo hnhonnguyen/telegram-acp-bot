@@ -189,7 +189,7 @@ async def test_schedule_task_requires_absolute_or_relative_time_input(
     )
 
     assert result["ok"] is False
-    assert result["error"] == "provide run_at or at least one delay input"
+    assert result["error"] == "provide cron or run_at or at least one delay input"
 
 
 @pytest.mark.asyncio

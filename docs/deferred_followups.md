@@ -1,10 +1,8 @@
 # Deferred Follow-ups
 
-Deferred follow-ups let the agent promise something now and do it later, without keeping the original ACP prompt alive. The feature is deliberately small, but it already covers the most useful cases: “check this again in 10 minutes”, “remind me at 9 PM”, or “send me a short follow-up in 30 seconds”.
+Deferred follow-ups let the agent promise something now and do it later, without keeping the original ACP prompt alive. The feature covers one-shot and recurring reminders: “check this again in 10 minutes”, “remind me every day at 9 AM UTC”, or “send me a short follow-up in 30 seconds”.
 
-The important user-facing idea is that scheduling should feel conversational, not infrastructural. The user asks for something later. The agent answers normally in the thread. When the scheduled time arrives, the follow-up appears as a reply to that scheduling confirmation.
-
-For example, the interaction is meant to feel like this:
+The user-facing idea is that scheduling feels conversational, not infrastructural. The user asks for something later. The agent answers normally in the thread. When the scheduled time arrives, the follow-up appears as a reply to that conversation.
 
 ```text
 User: check this PR again in 10 minutes
@@ -15,30 +13,31 @@ Bot: Okay. I’ll check it again in 10 minutes.
 Bot (replying to that confirmation): There are 3 new comments on the PR.
 ```
 
-The bot does not need to expose internal status messages such as “Scheduled” or “Completed”. The useful message is the one the agent already sends to the user. That message becomes the anchor for the later follow-up.
-
 ## What Exists Today
 
-The current implementation supports one-shot tasks only. Tasks are persisted in the SQLite database configured by {term}`ACP_SCHEDULED_TASKS_DB`, and an in-process scheduler loop claims due work inside the bot runtime. There are two execution modes.
+Tasks are persisted in the SQLite database configured by {term}`ACP_SCHEDULED_TASKS_DB`, and an in-process scheduler claims due work inside the bot runtime. Because the database is durable, a task survives the ACP session that created it, a bot restart, and a switch to a different ACP engine.
 
-`notify` is the simpler mode. It sends a plain reminder or follow-up text later.
+There are two execution modes:
 
-`prompt_agent` is more interesting. It re-enters the agent flow later with a stored prompt and sends the resulting answer back to Telegram as a reply to the scheduling confirmation.
+`notify` sends a stored text later. It does not call the agent, so it is the most durable choice for plain reminders.
 
-Recurring schedules and automatic session rehydration are intentionally out of scope for this first version.
+`prompt_agent` re-enters the agent flow later with a stored prompt and sends the answer back to Telegram. It still needs a live ACP session when the task fires.
 
-The bot does, however, provide a small management surface for already-scheduled work. The `/scheduled` command shows the pending and running follow-ups for the current chat, and pending items can be cancelled from inline buttons without typing task ids by hand.
+The agent manages tasks through four MCP tools:
 
-Users can also schedule prompts directly via the `/schedule` slash command, without going through the agent at all. This is especially useful when the model rejects a request due to quota limits or when immediate execution is not possible.
+- `schedule_task` creates a one-shot or recurring task.
+- `list_scheduled_tasks` lists tasks for the current chat.
+- `update_scheduled_task` changes a pending task.
+- `cancel_scheduled_task` cancels a pending task.
+
+The bot also exposes a human-facing management surface: `/scheduled` lists pending and running tasks with inline cancel buttons, and `/schedule` creates a one-shot `prompt_agent` task directly from the chat.
 
 (deferred-followups-ux)=
 ## How The UX Works
 
-When the agent calls `schedule_task`, the MCP tool persists the task and returns a summary. The tool itself does not send a Telegram message. Instead, the agent uses that tool result to answer the user in normal language. Once that answer reaches Telegram, the bot records that reply as the task’s anchor message.
+When the agent calls `schedule_task`, the MCP tool persists the task and returns a summary. The tool itself does not send a Telegram message. The agent uses that result to answer the user in normal language. Once that answer reaches Telegram, the bot records it as the task's anchor message.
 
-That small design choice keeps the chat cleaner. The visible message is the conversational confirmation from the agent, not a second technical artifact from the transport layer.
-
-When the scheduled time arrives, the scheduler claims the task and runs it. A `notify` task sends its text as a reply to the anchor. A `prompt_agent` task sends the stored prompt through the normal agent pipeline and replies to the same anchor with the final result.
+That design keeps the chat clean: the visible message is the conversational confirmation from the agent, not a second technical artifact from the transport layer.
 
 ```{mermaid}
 :align: center
@@ -46,83 +45,93 @@ sequenceDiagram
     participant U as Telegram user
     participant B as Bot runtime
     participant A as ACP agent
-    participant M as MCP schedule_task
+    participant M as MCP scheduling tools
     participant S as Scheduler
 
-    U->>B: "Check this PR again in 10 minutes"
-    B->>A: ACP prompt
-    A->>M: schedule_task(...)
-    M-->>A: { ok: true, summary: ... }
-    A-->>B: "Okay. I'll check again in 10 minutes."
+    U->>B: "Remind me every day at 9 UTC"
+    B->>A: ACP prompt plus channel policy
+    A->>M: schedule_task(cron="0 9 * * *")
+    M-->>A: task id and routing
+    A-->>B: "I'll remind you every day at 9 UTC."
     B-->>U: scheduling confirmation
     B->>B: bind task to that message id
     S->>B: task becomes due
-    B->>A: stored prompt, later
-    A-->>B: final reply
-    B-->>U: reply to scheduling confirmation
+    B-->>U: reply to the confirmation
 ```
 
-## Relative And Absolute Time Inputs
+Every reply also carries the original routing: chat, source message, requester, and chat type. If the agent's confirmation never arrives before the task is due, delivery falls back to the user's source message instead of silently failing.
 
-For short delays, relative time is the preferred path. Requests like “in 30 seconds” or “in 10 minutes” should become `delay_seconds`, `delay_minutes`, or `delay_hours` on the MCP side. That avoids forcing the agent to calculate a wall-clock timestamp for something that is naturally relative.
+## Relative, Absolute, And Cron Inputs
 
-Absolute scheduling is still supported through `run_at`, which must be an ISO timestamp with an explicit timezone offset. That is appropriate for requests such as “at 21:00 UTC” or “tomorrow at 09:00-03:00”.
+For short delays, relative time is the preferred path. Requests such as “in 30 seconds” or “in 10 minutes” become `delay_seconds`, `delay_minutes`, or `delay_hours`. That avoids forcing the agent to calculate a wall-clock timestamp.
+
+Absolute scheduling uses `run_at`, an ISO timestamp with an explicit timezone offset, for example `2026-04-11T09:00:00+00:00`.
+
+Recurring scheduling uses `cron`. Cron expressions are evaluated in UTC. The five-field form is `minute hour day-of-month month day-of-week`; a sixth trailing field adds seconds. Examples:
+
+- `0 9 * * *` — every day at 09:00 UTC.
+- `*/15 * * * *` — every 15 minutes.
+- `0 9 * * 1` — every Monday at 09:00 UTC.
+
+The first occurrence is strictly after the current time. After each run, the scheduler computes the next occurrence strictly after the moment the run finishes, so missed slots during downtime are skipped instead of replayed in a burst. The scheduler polls every 15 seconds, so minute granularity is the practical minimum even when seconds are present in the expression.
 
 ## Session Behavior
 
-`prompt_agent` only runs if the chat has an active ACP session when the scheduled time arrives. The implementation intentionally reuses the chat’s current live session rather than trying to resurrect one invisibly. That makes failures easier to understand and avoids hidden magic.
+`notify` does not depend on an ACP session. It survives `/clear`, `/stop`, process restarts, and engine changes.
 
-If there is no active session, the task fails visibly by replying to the anchor message with an explanation such as `Could not run automatically: no active session.` The same principle applies to delivery errors: the user should see a plain explanation in the thread rather than having the task disappear silently.
+`prompt_agent` only runs if the chat has an active ACP session when the scheduled time arrives. The implementation reuses the chat's current live session rather than resurrecting one invisibly. If there is no session, the task reports `Could not run automatically: no active session.` and, for recurring tasks, moves on to the next occurrence. The same principle applies to delivery errors: the user sees a plain explanation rather than having the task disappear silently.
 
-## Scheduling Directly Via Slash Command
+## Routing: Which Chat, Which Message, Who Asked
 
-In addition to the agent-driven path, users can schedule a `prompt_agent` task directly from the chat without involving the agent at all. This is useful when the model rejects a prompt due to quota limits or when immediate execution is not possible.
+Each task persists:
 
-```text
-/schedule <time> <prompt text>
-```
+- `chat_id` — the Telegram chat that receives the result.
+- `source_message_id` — the user message that triggered the scheduling request.
+- `anchor_message_id` — the agent's confirmation reply, when it arrives before the task fires.
+- requester id, username, and display name.
+- chat type (`private`, `group`, `supergroup`).
 
-Supported time formats are: `30s`, `10m`, `2h`, `1d`, natural-language dates such as `tomorrow 9am` or `mañana 9am`, or an ISO timestamp with an explicit timezone offset such as `2026-04-11T10:00:00+00:00`.
+Delivery replies to the anchor when available, otherwise to the source message. In group chats the bot also mentions the requester through a `tg://user` link, so the right person is notified even when the task was scheduled from a busy thread.
 
-The prompt text can span multiple lines. Everything after the time spec is preserved as-is and stored in the scheduled `prompt_agent` task.
+These routing fields are immutable for the lifetime of the task. Updating a schedule changes its mode, content, time, or recurrence; it does not move the task to another chat or another person.
 
-Example interaction:
+## Recurring Schedules
 
-```text
-User: /schedule tomorrow 9am Check for new review comments on the open PR
-Summarize what changed
-Flag anything blocking merge
-Bot: Scheduled for 2026-04-11 09:00 UTC. Use /scheduled to view or cancel.
+A recurring task has a non-null `cron_expression` and cycles `pending -> running -> pending`. The scheduler reschedules it after every attempt:
 
-... the next day at 9:00 UTC ...
+- success: next occurrence, with `last_error` cleared;
+- execution failure: next occurrence, with `last_error` retained for inspection;
+- chat busy: the same occurrence is retried on the next poll;
+- corrupt stored expression: the task is marked `failed` instead of looping forever.
 
-Bot (replying to that command): There are 3 new comments on the PR.
-```
+Cancellation is a soft delete: a pending task moves to `cancelled` and disappears from `/scheduled`. A task that is running finishes its current occurrence and becomes cancellable again afterwards.
 
-Single-line prompts remain valid as a shorter form:
+Execution is at-least-once across crashes: if the process dies after delivery but before the reschedule is written, the occurrence can run again after restart.
 
-```text
-User: /schedule 2h Generate the weekly summary report
-Bot: Scheduled for 2026-04-11 12:00 UTC. Use /scheduled to view or cancel.
-```
+## Agent Management
 
-Natural-language parsing uses English and Spanish by default, and can be restricted or extended with `telegram.schedule_languages` or the `--schedule-language` flag.
-
-The `/schedule` command sets the command message itself as the anchor, so the scheduled reply will appear directly in that thread. Session behavior and failure reporting follow the same rules as agent-driven scheduling.
-
-## Inspecting And Cancelling Scheduled Work
-
-The scheduling flow is conversational, but it is still useful to inspect what is queued. For that reason, the bot exposes a Telegram-side command:
+The agent can inspect and change schedules through the same MCP server:
 
 ```text
-/scheduled
+list_scheduled_tasks(statuses=["pending"], limit=20)
+update_scheduled_task(task_id=..., cron="30 8 * * *")
+update_scheduled_task(task_id=..., cron="")      # clear recurrence
+cancel_scheduled_task(task_id=...)
 ```
 
-This command is intentionally modest. It is not a rich dashboard. It simply shows the pending and running tasks for the current chat in a readable list, with inline **Cancel** buttons for the tasks that are still pending.
+All management tools are scoped to the current chat: a task id from another chat is reported as `task not found`. Only `pending` tasks can be updated or cancelled; a running task must finish first. Updating a task resets its attempt state and clears the previous error.
 
-The list uses small consecutive numbers such as `1.` and `2.` so the interface feels more like `/resume` and less like a database browser. Internally the bot still uses the real task ids for callback handling, but the user only sees the short numbered list.
+The human-facing `/scheduled` command remains the quickest way to see and cancel the queue. See {doc}`how-to` for examples.
 
-That choice keeps the product surface small. The agent still owns scheduling itself through `schedule_task`, while the human gets a direct way to inspect or cancel follow-ups without leaving Telegram or touching the SQLite database.
+## Engine Independence
+
+Scheduling must not depend on an engine-specific cron feature. The bot therefore reinforces the same policy in three places:
+
+1. The internal `telegram-channel` MCP server instructions.
+2. The `schedule_task` tool description.
+3. A channel policy block included in every ACP prompt.
+
+All three tell the agent to use the bot's scheduling tools and never a built-in or engine-native cron. The prompt-level block is the strongest guarantee, because it reaches engines that ignore or hide MCP instructions. It also tells the agent not to repeat the policy to the user.
 
 ## A Note About Multiple MCP Calls
 

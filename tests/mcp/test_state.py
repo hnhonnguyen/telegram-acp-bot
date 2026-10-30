@@ -18,6 +18,7 @@ from tests.mcp.support import (
     TEST_MEDIA_FILE_ID,
     TEST_MEDIA_MESSAGE_ID,
     TEST_QUEUED_AT,
+    PromptRequester,
     agent_state_dir,
     append_pending_media,
     channel_state_module,
@@ -25,16 +26,19 @@ from tests.mcp.support import (
     load_last_session_id,
     load_pending_media,
     load_prompt_message_id,
+    load_prompt_requester,
     mcp_channel,
     resolve_state_file,
     save_last_session_id,
     save_prompt_message_id,
+    save_prompt_requester,
     save_session_chat_map,
     take_pending_media,
 )
 
 PROMPT_MESSAGE_ID = 42
 TEST_PID = 4242
+MALFORMED_REQUESTER_USER_ID = 3
 
 
 def queue_media(path: Path, *, chat_id: int = TEST_MEDIA_CHAT_ID, file_id: str = TEST_MEDIA_FILE_ID) -> None:
@@ -140,6 +144,68 @@ def test_save_last_session_id_preserves_prompt_message_ids(tmp_path: Path):
 
     payload = json.loads(state_file.read_text(encoding="utf-8"))
     assert payload["prompt_message_ids"] == {"s1": PROMPT_MESSAGE_ID}
+
+
+def test_save_prompt_requester_round_trips(tmp_path: Path):
+    state_file = tmp_path / "state.json"
+    requester = PromptRequester(
+        user_id=88,
+        username="alice",
+        display_name="Alice Doe",
+        chat_type="group",
+    )
+
+    save_prompt_requester(state_file, "s1", requester)
+
+    assert load_prompt_requester(state_file, "s1") == requester
+
+
+def test_save_prompt_requester_can_clear_existing_value(tmp_path: Path):
+    state_file = tmp_path / "state.json"
+    save_prompt_requester(state_file, "s1", PromptRequester(user_id=88))
+
+    save_prompt_requester(state_file, "s1", None)
+
+    assert load_prompt_requester(state_file, "s1") is None
+    payload = json.loads(state_file.read_text(encoding="utf-8"))
+    assert "prompt_requesters" not in payload
+
+
+def test_save_session_chat_map_preserves_prompt_requesters(tmp_path: Path):
+    state_file = tmp_path / "state.json"
+    save_prompt_requester(state_file, "s1", PromptRequester(user_id=88, username="alice"))
+
+    save_session_chat_map(state_file, {"s1": 123})
+
+    payload = json.loads(state_file.read_text(encoding="utf-8"))
+    assert payload["prompt_requesters"] == {
+        "s1": {"user_id": 88, "username": "alice", "display_name": None, "chat_type": None}
+    }
+
+
+def test_load_prompt_requester_ignores_malformed_entries(tmp_path: Path):
+    state_file = tmp_path / "state.json"
+    state_file.write_text(
+        json.dumps(
+            {
+                "prompt_requesters": {
+                    "not-a-dict": "ignored",
+                    "missing-user": {"username": "alice"},
+                    "bad-fields": {"user_id": 3, "username": 5, "display_name": None, "chat_type": []},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert load_prompt_requester(state_file, "not-a-dict") is None
+    assert load_prompt_requester(state_file, "missing-user") is None
+    requester = load_prompt_requester(state_file, "bad-fields")
+    assert requester is not None
+    assert requester.user_id == MALFORMED_REQUESTER_USER_ID
+    assert requester.username is None
+    assert requester.display_name is None
+    assert requester.chat_type is None
 
 
 def test_state_file_atomic_write_removes_temp_file_on_replace_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

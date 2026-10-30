@@ -228,12 +228,29 @@ async def test_on_message_sets_and_clears_prompt_message_context():
     assert service.prompt_message_context == [("s-context", 91), ("s-context", None)]
 
 
+async def test_prompt_requester_returns_none_without_user():
+    bridge = TelegramBridge(
+        config=make_config(token="TOKEN", allowed_user_ids=[], workspace="."),
+        agent_service=EchoAgentService(SessionRegistry()),
+    )
+    update = make_update(text="hello")
+    update.effective_user = None
+
+    assert bridge._prompt_requester(update) is None
+
+
 async def test_on_message_continues_when_setting_prompt_message_context_fails(
     monkeypatch: pytest.MonkeyPatch,
 ):
     class FailingPromptContextService(PromptContextService):
-        async def set_prompt_message_context(self, *, session_id: str, message_id: int | None) -> None:
-            del session_id
+        async def set_prompt_message_context(
+            self,
+            *,
+            session_id: str,
+            message_id: int | None,
+            requester: object | None = None,
+        ) -> None:
+            del session_id, requester
             if message_id is not None:
                 raise RuntimeError
             self.prompt_message_context.append(("s-context", message_id))
@@ -257,8 +274,14 @@ async def test_on_message_continues_when_clearing_prompt_message_context_fails(
     monkeypatch: pytest.MonkeyPatch,
 ):
     class FailingPromptContextService(PromptContextService):
-        async def set_prompt_message_context(self, *, session_id: str, message_id: int | None) -> None:
-            del session_id
+        async def set_prompt_message_context(
+            self,
+            *,
+            session_id: str,
+            message_id: int | None,
+            requester: object | None = None,
+        ) -> None:
+            del session_id, requester
             if message_id is None:
                 raise RuntimeError
             self.prompt_message_context.append(("s-context", message_id))
@@ -1378,6 +1401,34 @@ async def test_scheduled_command_lists_pending_tasks_with_cancel_buttons(tmp_pat
     assert reply_markup.inline_keyboard[0][0].callback_data == f"scheduled|cancel|{task.id}"
 
 
+async def test_scheduled_command_shows_recurring_expression_and_requester(tmp_path: Path):
+    store = ScheduledTaskStore(tmp_path / "scheduled.sqlite3")
+    store.initialize()
+    store.create_task(
+        chat_id=TEST_CHAT_ID,
+        mode="notify",
+        notify_text="Drink water",
+        run_at=datetime.now(UTC) + timedelta(minutes=10),
+        cron_expression="0 9 * * *",
+        chat_type="group",
+        requester_user_id=88,
+        requester_username="alice",
+    )
+    bridge = TelegramBridge(
+        config=make_config(token="TOKEN", allowed_user_ids=[], workspace="."),
+        agent_service=EchoAgentService(SessionRegistry()),
+        scheduled_task_store=store,
+    )
+    update = make_update(with_message=True)
+
+    await bridge.scheduled(update, make_context())
+
+    assert update.message is not None
+    text = update.message.replies[-1]
+    assert "1. notify (recurring: 0 9 * * *)" in text
+    assert "  to: @alice" in text
+
+
 async def test_scheduled_command_reports_when_no_tasks_exist(tmp_path: Path):
     store = ScheduledTaskStore(tmp_path / "scheduled.sqlite3")
     store.initialize()
@@ -2033,6 +2084,10 @@ async def test_schedule_prompt_creates_pending_task(tmp_path: Path):
     assert task.mode == "prompt_agent"
     assert task.prompt_text == "Check for new PRs"
     assert task.anchor_message_id == anchor_message_id
+    assert task.source_message_id == anchor_message_id
+    assert task.requester_user_id == 1
+    assert task.requester_username is None
+    assert task.chat_type == "private"
     assert task.status == "pending"
     now = datetime.now(UTC)
     assert now + timedelta(minutes=29) <= task.run_at <= now + timedelta(minutes=31)

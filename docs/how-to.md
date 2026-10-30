@@ -134,6 +134,8 @@ You can schedule a deferred agent prompt without going through the agent, using 
 /schedule <time> <prompt text>
 ```
 
+`/schedule` is one-shot only. For recurring reminders, or to list, change, or cancel tasks through the agent, see {ref}`how-to-recurring-reminders` below.
+
 Supported time formats:
 
 - `30s` — 30 seconds from now
@@ -181,7 +183,7 @@ When the agent schedules a deferred follow-up, you can inspect the pending work 
 /scheduled
 ```
 
-The bot replies with a compact summary of the scheduled tasks for the current chat. Pending tasks are shown with inline **Cancel** buttons, so you do not have to copy or type task ids manually.
+The bot replies with a compact summary of the scheduled tasks for the current chat. Pending tasks are shown with inline **Cancel** buttons, so you do not have to copy or type task ids manually. Recurring tasks show their cron expression, and group chats also show who asked.
 
 A typical interaction looks like this:
 
@@ -191,15 +193,39 @@ A typical interaction looks like this:
 Scheduled tasks for this chat:
 
 Pending:
-1. prompt_agent | 2026-03-30 22:10:00 UTC
+1. notify (recurring: 0 9 * * *) | 2026-03-31 09:00:00 UTC
+  to: @alice
+  Drink water.
+2. prompt_agent | 2026-03-30 22:10:00 UTC
   Check the PR again and report any new comments.
-2. notify | 2026-03-30 22:30:00 UTC
-  Remind me to restart the bot.
 ```
 
 From there you can tap **Cancel 1**, **Cancel 2**, and so on, or use **Cancel all pending** if you want to clear the queue for that chat.
 
+Recurring tasks sit in `pending` between runs, so they show up in the list and can be cancelled there. A task that is running finishes its current occurrence first.
+
 For this first version, cancellation is intentionally limited to tasks that are still `pending`. Tasks that are already `running` are visible for inspection, but they are not turned into interruptible jobs by this command.
+
+(how-to-recurring-reminders)=
+### Ask the agent to create or manage a recurring reminder
+
+Recurring reminders are created through the agent, not through `/schedule`. Ask in normal language:
+
+```text
+Remind me every day at 9 UTC to drink water.
+```
+
+The agent calls `schedule_task` with a cron expression, for example `cron="0 9 * * *"`. The task is stored in SQLite, so it survives `/clear`, a bot restart, and a change of ACP engine. A plain `notify` reminder does not need a live session when it fires.
+
+You can manage the queue conversationally too:
+
+```text
+Show my reminders.
+Change my water reminder to 8 UTC.
+Cancel my water reminder.
+```
+
+The agent uses `list_scheduled_tasks`, `update_scheduled_task`, and `cancel_scheduled_task`. Management is limited to the current chat, and only pending tasks can be changed or cancelled.
 
 ## 10. Restart bot process (dev workflow)
 

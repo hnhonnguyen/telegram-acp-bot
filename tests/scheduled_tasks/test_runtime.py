@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from typing import cast
 
 import pytest
-from telegram import Update
+from telegram import MessageEntity, Update
 
 from telegram_acp_bot.acp.models import (
     AgentActivityBlock,
@@ -39,6 +39,7 @@ from tests.telegram.support import DummyMessage as DummyBotMessage
 pytestmark = pytest.mark.asyncio
 ANCHOR_MESSAGE_ID = 42
 BOUND_REPLY_MESSAGE_ID = 11
+SOURCE_MESSAGE_ID = 55
 UNEXPECTED_EXECUTION_ERROR = "unexpected boom"
 
 
@@ -127,6 +128,12 @@ def make_task(  # noqa: PLR0913
     prompt_text: str | None = None,
     notify_text: str | None = "Ping now",
     anchor_message_id: int | None = ANCHOR_MESSAGE_ID,
+    cron_expression: str | None = None,
+    source_message_id: int | None = None,
+    requester_user_id: int | None = None,
+    requester_username: str | None = None,
+    requester_name: str | None = None,
+    chat_type: str | None = None,
 ) -> ScheduledTask:
     now = datetime.now(UTC)
     return ScheduledTask(
@@ -137,6 +144,12 @@ def make_task(  # noqa: PLR0913
         mode=mode,
         prompt_text=prompt_text,
         notify_text=notify_text,
+        cron_expression=cron_expression,
+        source_message_id=source_message_id,
+        requester_user_id=requester_user_id,
+        requester_username=requester_username,
+        requester_name=requester_name,
+        chat_type=chat_type,
         run_at=now,
         status="pending",
         attempt_count=0,
@@ -538,6 +551,178 @@ async def test_scheduler_marks_task_failed_on_unexpected_error(tmp_path: Path):
     assert stored.last_error == UNEXPECTED_EXECUTION_ERROR
 
 
+async def test_scheduler_reschedules_recurring_task_after_success(tmp_path: Path, freezer):
+    freezer.move_to(datetime(2026, 3, 30, 12, 0, tzinfo=UTC))
+    store = ScheduledTaskStore(tmp_path / "scheduled.sqlite3")
+    store.initialize()
+    task = store.create_task(
+        chat_id=TEST_CHAT_ID,
+        mode="notify",
+        notify_text="first",
+        run_at=datetime.now(UTC) - timedelta(seconds=1),
+        cron_expression="*/5 * * * *",
+    )
+    claimed = store.claim_due_tasks(now=datetime.now(UTC))
+
+    async def executor(_: ScheduledTask) -> None:
+        return None
+
+    scheduler = ScheduledTaskScheduler(store=store, runner=ScheduledTaskRunner(executor))
+    await scheduler._run_claimed_task(claimed[0])
+
+    stored = store.get_task(task.id)
+    assert stored is not None
+    assert stored.status == "pending"
+    assert stored.run_at == datetime(2026, 3, 30, 12, 5, tzinfo=UTC)
+    assert stored.last_error is None
+
+
+async def test_scheduler_reschedules_recurring_task_after_execution_error(tmp_path: Path, freezer):
+    freezer.move_to(datetime(2026, 3, 30, 12, 0, tzinfo=UTC))
+    store = ScheduledTaskStore(tmp_path / "scheduled.sqlite3")
+    store.initialize()
+    task = store.create_task(
+        chat_id=TEST_CHAT_ID,
+        mode="notify",
+        notify_text="first",
+        run_at=datetime.now(UTC) - timedelta(seconds=1),
+        cron_expression="*/5 * * * *",
+    )
+    claimed = store.claim_due_tasks(now=datetime.now(UTC))
+
+    async def executor(_: ScheduledTask) -> None:
+        raise ScheduledTaskExecutionError("boom")
+
+    scheduler = ScheduledTaskScheduler(store=store, runner=ScheduledTaskRunner(executor))
+    await scheduler._run_claimed_task(claimed[0])
+
+    stored = store.get_task(task.id)
+    assert stored is not None
+    assert stored.status == "pending"
+    assert stored.run_at == datetime(2026, 3, 30, 12, 5, tzinfo=UTC)
+    assert stored.last_error == "boom"
+
+
+async def test_scheduler_reschedules_recurring_task_after_unexpected_error(tmp_path: Path, freezer):
+    freezer.move_to(datetime(2026, 3, 30, 12, 0, tzinfo=UTC))
+    store = ScheduledTaskStore(tmp_path / "scheduled.sqlite3")
+    store.initialize()
+    task = store.create_task(
+        chat_id=TEST_CHAT_ID,
+        mode="notify",
+        notify_text="first",
+        run_at=datetime.now(UTC) - timedelta(seconds=1),
+        cron_expression="*/5 * * * *",
+    )
+    claimed = store.claim_due_tasks(now=datetime.now(UTC))
+
+    async def executor(_: ScheduledTask) -> None:
+        raise RuntimeError(UNEXPECTED_EXECUTION_ERROR)
+
+    scheduler = ScheduledTaskScheduler(store=store, runner=ScheduledTaskRunner(executor))
+    await scheduler._run_claimed_task(claimed[0])
+
+    stored = store.get_task(task.id)
+    assert stored is not None
+    assert stored.status == "pending"
+    assert stored.run_at == datetime(2026, 3, 30, 12, 5, tzinfo=UTC)
+    assert stored.last_error == UNEXPECTED_EXECUTION_ERROR
+
+
+async def test_scheduler_skips_missed_recurring_occurrences_after_downtime(tmp_path: Path, freezer):
+    freezer.move_to(datetime(2026, 3, 30, 12, 0, tzinfo=UTC))
+    store = ScheduledTaskStore(tmp_path / "scheduled.sqlite3")
+    store.initialize()
+    task = store.create_task(
+        chat_id=TEST_CHAT_ID,
+        mode="notify",
+        notify_text="first",
+        run_at=datetime(2026, 3, 30, 9, 0, tzinfo=UTC),
+        cron_expression="*/5 * * * *",
+    )
+    claimed = store.claim_due_tasks(now=datetime.now(UTC))
+
+    async def executor(_: ScheduledTask) -> None:
+        return None
+
+    scheduler = ScheduledTaskScheduler(store=store, runner=ScheduledTaskRunner(executor))
+    await scheduler._run_claimed_task(claimed[0])
+
+    stored = store.get_task(task.id)
+    assert stored is not None
+    assert stored.run_at == datetime(2026, 3, 30, 12, 5, tzinfo=UTC)
+
+
+async def test_scheduler_keeps_recurring_task_pending_when_deferred(tmp_path: Path, freezer):
+    freezer.move_to(datetime(2026, 3, 30, 12, 0, tzinfo=UTC))
+    store = ScheduledTaskStore(tmp_path / "scheduled.sqlite3")
+    store.initialize()
+    run_at = datetime(2026, 3, 30, 11, 59, 59, tzinfo=UTC)
+    task = store.create_task(
+        chat_id=TEST_CHAT_ID,
+        mode="notify",
+        notify_text="first",
+        run_at=run_at,
+        cron_expression="*/5 * * * *",
+    )
+    claimed = store.claim_due_tasks(now=datetime.now(UTC))
+
+    async def executor(_: ScheduledTask) -> None:
+        raise ScheduledTaskDeferredError("busy")
+
+    scheduler = ScheduledTaskScheduler(store=store, runner=ScheduledTaskRunner(executor))
+    await scheduler._run_claimed_task(claimed[0])
+
+    stored = store.get_task(task.id)
+    assert stored is not None
+    assert stored.status == "pending"
+    assert stored.run_at == run_at
+
+
+async def test_scheduler_marks_recurring_task_failed_when_cron_is_invalid(tmp_path: Path, freezer):
+    freezer.move_to(datetime(2026, 3, 30, 12, 0, tzinfo=UTC))
+    store = ScheduledTaskStore(tmp_path / "scheduled.sqlite3")
+    store.initialize()
+    task = store.create_task(
+        chat_id=TEST_CHAT_ID,
+        mode="notify",
+        notify_text="first",
+        run_at=datetime.now(UTC) - timedelta(seconds=1),
+        cron_expression="bad",
+    )
+    claimed = store.claim_due_tasks(now=datetime.now(UTC))
+
+    async def executor(_: ScheduledTask) -> None:
+        return None
+
+    scheduler = ScheduledTaskScheduler(store=store, runner=ScheduledTaskRunner(executor))
+    await scheduler._run_claimed_task(claimed[0])
+
+    stored = store.get_task(task.id)
+    assert stored is not None
+    assert stored.status == "failed"
+    assert stored.last_error is not None
+    assert "invalid cron expression" in stored.last_error
+
+
+async def test_scheduler_logs_when_reschedule_write_fails(mocker, freezer):
+    freezer.move_to(datetime(2026, 3, 30, 12, 0, tzinfo=UTC))
+    store = mocker.Mock()
+    store.reschedule_task.side_effect = RuntimeError("db down")
+
+    async def executor(_: ScheduledTask) -> None:
+        return None
+
+    scheduler = ScheduledTaskScheduler(
+        store=cast(ScheduledTaskStore, store),
+        runner=ScheduledTaskRunner(executor),
+    )
+
+    await scheduler._finish_claimed_task(make_task(cron_expression="*/5 * * * *"), error=None)
+
+    store.reschedule_task.assert_called_once()
+
+
 async def test_execute_scheduled_prompt_replies_to_anchor_message():
     service = ScheduledPromptService()
     bridge = TelegramBridge(
@@ -555,6 +740,32 @@ async def test_execute_scheduled_prompt_replies_to_anchor_message():
     assert bot.actions == [(TEST_CHAT_ID, "typing")]
     assert bot.sent_messages[-1]["text"] == "Scheduled reply"
     assert bot.sent_messages[-1]["reply_to_message_id"] == ANCHOR_MESSAGE_ID
+
+
+async def test_execute_scheduled_prompt_mentions_requester_in_group():
+    service = ScheduledPromptService()
+    bridge = TelegramBridge(
+        config=make_config(token="TOKEN", allowed_user_ids=[], workspace="."),
+        agent_service=cast(AgentService, service),
+    )
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+
+    await bridge.execute_scheduled_task(
+        make_task(
+            mode="prompt_agent",
+            prompt_text="check again",
+            notify_text=None,
+            chat_type="group",
+            requester_user_id=88,
+            requester_name="Alice Doe",
+        ),
+    )
+
+    message = bot.sent_messages[-1]
+    assert message["text"] == "Alice Doe\nScheduled reply"
+    entities = cast(list[MessageEntity], message["entities"])
+    assert any(getattr(entity, "url", None) == "tg://user?id=88" for entity in entities)
 
 
 async def test_dispatch_reply_binds_unanchored_scheduled_tasks(tmp_path: Path):
@@ -650,7 +861,7 @@ async def test_execute_scheduled_notification_requires_running_app():
         await bridge.execute_scheduled_task(make_task(mode="notify"))
 
 
-async def test_execute_scheduled_notification_requires_anchor_message():
+async def test_execute_scheduled_notification_sends_without_anchor():
     bridge = TelegramBridge(
         config=make_config(token="TOKEN", allowed_user_ids=[], workspace="."),
         agent_service=cast(AgentService, ScheduledPromptService()),
@@ -658,8 +869,63 @@ async def test_execute_scheduled_notification_requires_anchor_message():
     bot = DummyBot()
     bridge._app = cast(Application, SimpleNamespace(bot=bot))
 
-    with pytest.raises(ScheduledTaskExecutionError, match="anchor message"):
-        await bridge.execute_scheduled_task(make_task(mode="notify", anchor_message_id=None))
+    await bridge.execute_scheduled_task(make_task(mode="notify", anchor_message_id=None))
+
+    assert bot.sent_messages[-1]["text"] == "Ping now"
+    assert "reply_to_message_id" not in bot.sent_messages[-1]
+
+
+async def test_execute_scheduled_notification_falls_back_to_source_message():
+    bridge = TelegramBridge(
+        config=make_config(token="TOKEN", allowed_user_ids=[], workspace="."),
+        agent_service=cast(AgentService, ScheduledPromptService()),
+    )
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+
+    await bridge.execute_scheduled_task(
+        make_task(mode="notify", anchor_message_id=None, source_message_id=SOURCE_MESSAGE_ID),
+    )
+
+    assert bot.sent_messages[-1]["reply_to_message_id"] == SOURCE_MESSAGE_ID
+
+
+async def test_execute_scheduled_notification_mentions_requester_in_group():
+    bridge = TelegramBridge(
+        config=make_config(token="TOKEN", allowed_user_ids=[], workspace="."),
+        agent_service=cast(AgentService, ScheduledPromptService()),
+    )
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+
+    await bridge.execute_scheduled_task(
+        make_task(
+            mode="notify",
+            chat_type="group",
+            requester_user_id=88,
+            requester_name="Alice Doe",
+        ),
+    )
+
+    message = bot.sent_messages[-1]
+    assert message["text"] == "Alice Doe\nPing now"
+    entities = cast(list[MessageEntity], message["entities"])
+    assert any(getattr(entity, "url", None) == "tg://user?id=88" for entity in entities)
+
+
+async def test_execute_scheduled_notification_does_not_mention_in_private_chat():
+    bridge = TelegramBridge(
+        config=make_config(token="TOKEN", allowed_user_ids=[], workspace="."),
+        agent_service=cast(AgentService, ScheduledPromptService()),
+    )
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+
+    await bridge.execute_scheduled_task(
+        make_task(mode="notify", chat_type="private", requester_user_id=88, requester_name="Alice Doe"),
+    )
+
+    assert bot.sent_messages[-1]["text"] == "Ping now"
 
 
 async def test_execute_scheduled_notification_replies_to_anchor_message():

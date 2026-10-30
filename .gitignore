@@ -34,3 +34,4 @@ __pycache__/
 .worktrees/
 .external-worktrees/
 artifacts/
+.telegram-media/

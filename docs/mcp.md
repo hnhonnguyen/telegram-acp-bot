@@ -39,7 +39,7 @@ The built-in server currently exposes seven tools.
 
 `telegram_set_message_reaction` lets the agent add a standard Telegram emoji reaction to a message in the current chat. This is the tool behind lightweight moments such as “acknowledge that briefly” or “react instead of sending a noisy one-line reply”.
 
-`schedule_task` lets the agent schedule a one-shot deferred follow-up. This is the tool behind flows like “check for review in 2 minutes” or “remind me tomorrow at 9 PM”.
+`schedule_task` lets the agent create a durable one-shot or recurring follow-up. The same server also exposes `list_scheduled_tasks`, `update_scheduled_task`, and `cancel_scheduled_task` for management. These are the tools behind flows like “check for review in 2 minutes”, “remind me every day at 9 UTC”, or “cancel my water reminder”.
 
 Here is a concrete example of the second case. A user may say:
 
@@ -223,9 +223,27 @@ The first version intentionally supports only standard Telegram reaction emoji. 
 (mcp-feature-scheduling)=
 ## Schedule Tasks
 
-`schedule_task` stores a one-shot deferred follow-up for the current chat. It supports two styles of time input. For absolute times, the agent can pass `run_at` as an ISO timestamp with an explicit timezone offset. For relative requests such as “in 10 minutes” or “in 30 seconds”, the preferred form is a delay input like `delay_minutes=10` or `delay_seconds=30`. That keeps the tool call simple and avoids making the agent compute a wall-clock timestamp for short delays.
+`schedule_task` stores a durable deferred follow-up for the current chat. Tasks live in {term}`ACP_SCHEDULED_TASKS_DB`, so they survive ACP session resets, bot restarts, and engine switches. The tool supports two execution modes: `notify` sends stored text without calling the agent; `prompt_agent` re-prompts the live ACP session when the task fires.
 
-A typical relative scheduling call looks like this:
+Time can be expressed in three ways:
+
+- `cron` for recurring work. Expressions use UTC. Five fields are `minute hour day-of-month month day-of-week`; a sixth trailing field adds seconds. For example, `0 9 * * *` runs every day at 09:00 UTC.
+- `run_at` for absolute one-shot times, as an ISO timestamp with an explicit timezone offset.
+- `delay_seconds`, `delay_minutes`, or `delay_hours` for relative one-shot requests such as “in 10 minutes”.
+
+Provide exactly one of `cron` or the one-shot time inputs. Mixing them is rejected.
+
+A recurring notification looks like this:
+
+```text
+schedule_task(
+  mode="notify",
+  cron="0 9 * * *",
+  notify_text="Drink water."
+)
+```
+
+A one-shot agent follow-up looks like this:
 
 ```text
 schedule_task(
@@ -234,6 +252,23 @@ schedule_task(
   prompt_text="Check the PR again and tell me if there are new comments."
 )
 ```
+
+The first occurrence is strictly after the current time. After every attempt, the scheduler computes the next occurrence strictly after the attempt finishes, so missed slots during downtime are skipped rather than replayed in a burst. The scheduler polls every 15 seconds, so minute granularity is the practical minimum.
+
+The tool also persists routing: chat id, the user's source message, the agent's confirmation message when available, requester id/username/name, and chat type. Delivery replies to the confirmation first and falls back to the source message. In groups, the bot mentions the requester.
+
+The agent can manage existing tasks:
+
+```text
+list_scheduled_tasks(statuses=["pending"], limit=20)
+update_scheduled_task(task_id="...", cron="30 8 * * *")
+update_scheduled_task(task_id="...", cron="")   # clear recurrence
+cancel_scheduled_task(task_id="...")
+```
+
+All management tools operate only on tasks owned by the current chat. Only `pending` tasks can be updated or cancelled; a running task must finish first. Cancellation is a soft delete: the task stops running and disappears from the pending list.
+
+The server instructions and the `schedule_task` description tell the agent to use these tools instead of any engine-native cron. The same policy is also injected into every ACP prompt as a channel policy block, so it reaches engines that ignore MCP instructions. See {doc}`deferred_followups` for the full behavior and rationale.
 
 ## Session Routing
 
@@ -249,6 +284,8 @@ directory under {envvar}`XDG_STATE_HOME`, such as `~/.local/state/telegram-acp-b
 see {ref}`config-agents`.
 
 `AcpAgentService` persists a `session_id -> chat_id` mapping, and the MCP server reads that mapping when a tool call arrives. If a tool call does not provide `session_id`, the server tries to infer it. The inference order is intentionally conservative: if there is only one active mapped session, it uses that; otherwise it tries the last active session remembered by the channel state. If neither rule produces a safe answer, the tool returns an explicit error rather than guessing.
+
+While a prompt is in flight the bot also persists the source Telegram message id and the requester identity (user id, username, display name, chat type). The scheduling tools copy those fields into the task row, so a later delivery knows which chat and message to target and which person to mention in a group.
 
 This routing model is what allows an agent response such as “send me the screenshot” or “remind me in 20 minutes” to affect the same Telegram chat that originated the ACP session.
 

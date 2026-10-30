@@ -36,6 +36,7 @@ from telegram.ext import (
     MessageHandler,
     filters,
 )
+from telegram.helpers import mention_markdown
 from telegramify_markdown import MessageEntity as MarkdownMessageEntity
 from telegramify_markdown import convert, split_entities, utf16_len
 
@@ -59,6 +60,7 @@ from telegram_acp_bot.acp.models import (
 )
 from telegram_acp_bot.agent_identity import DEFAULT_AGENT_NAME
 from telegram_acp_bot.logging_context import bind_log_context, log_text_preview
+from telegram_acp_bot.mcp.state import PromptRequester
 from telegram_acp_bot.scheduled_tasks import (
     ScheduledTask,
     ScheduledTaskDeferredError,
@@ -138,7 +140,6 @@ logger = logging.getLogger(__name__)
 APP_NOT_RUNNING_ERROR = "application is not running"
 SCHEDULED_CHAT_BUSY_ERROR = "chat is busy"
 SCHEDULED_PROMPT_TRY_LOCK_TIMEOUT_SECONDS = 1e-9
-SCHEDULED_MISSING_ANCHOR_ERROR = "scheduled task is missing an anchor message"
 SCHEDULED_TASK_PREVIEW_MAX_CHARS = 72
 SCHEDULE_COMMAND_MIN_ARGS = 2
 _SCHEDULE_DELAY_RE = re.compile(r"^(\d+)(s|m|h|d)$", re.IGNORECASE)
@@ -623,6 +624,7 @@ class TelegramBridge:
         if message is None:
             return
         anchor_message_id = message.message_id
+        requester = self._prompt_requester(update)
 
         session_context = self._active_session_context(chat_id=chat_id)
         session_id = None if session_context is None else session_context[0]
@@ -636,6 +638,11 @@ class TelegramBridge:
                 mode="prompt_agent",
                 prompt_text=prompt_text,
                 run_at=run_at,
+                source_message_id=anchor_message_id,
+                requester_user_id=None if requester is None else requester.user_id,
+                requester_username=None if requester is None else requester.username,
+                requester_name=None if requester is None else requester.display_name,
+                chat_type=None if requester is None else requester.chat_type,
             )
         except Exception:
             logger.exception("Failed to create scheduled task for chat %s", chat_id)
@@ -1991,10 +1998,12 @@ class TelegramBridge:
         ):
             await context.bot.send_chat_action(chat_id=prompt_input.chat_id, action=ChatAction.TYPING)
         source_message_id = getattr(self._anchor_message(update), "message_id", None)
+        requester = self._prompt_requester(update)
         try:
             await self._set_prompt_message_context(
                 session_id=session_id,
                 message_id=source_message_id,
+                requester=requester,
             )
             with bind_log_context(
                 chat_id=prompt_input.chat_id,
@@ -2018,7 +2027,7 @@ class TelegramBridge:
             await self._reply(update, "The agent died and could not be restarted. Try `/new` to start a session.")
             return None
         finally:
-            await self._set_prompt_message_context(session_id=session_id, message_id=None)
+            await self._set_prompt_message_context(session_id=session_id, message_id=None, requester=None)
         if reply is not None:
             with bind_log_context(
                 chat_id=prompt_input.chat_id,
@@ -2030,14 +2039,35 @@ class TelegramBridge:
         await self._reply(update, "No active session. Send a message again or use /new [workspace].")
         return None
 
-    async def _set_prompt_message_context(self, *, session_id: str | None, message_id: int | None) -> None:
+    @staticmethod
+    def _prompt_requester(update: Update) -> PromptRequester | None:
+        user = update.effective_user
+        user_id = None if user is None else getattr(user, "id", None)
+        if user_id is None:
+            return None
+        chat = update.effective_chat
+        chat_type = None if chat is None else getattr(chat, "type", None)
+        return PromptRequester(
+            user_id=int(user_id),
+            username=getattr(user, "username", None),
+            display_name=getattr(user, "full_name", None),
+            chat_type=None if chat_type is None else str(getattr(chat_type, "value", chat_type)),
+        )
+
+    async def _set_prompt_message_context(
+        self,
+        *,
+        session_id: str | None,
+        message_id: int | None,
+        requester: PromptRequester | None = None,
+    ) -> None:
         if session_id is None:
             return
         prompt_context_setter = getattr(self._agent_service, "set_prompt_message_context", None)
         if not callable(prompt_context_setter):
             return
         try:
-            await prompt_context_setter(session_id=session_id, message_id=message_id)
+            await prompt_context_setter(session_id=session_id, message_id=message_id, requester=requester)
         except Exception:
             logger.exception(
                 "Failed to persist prompt message context: session_id=%s message_id=%s",
@@ -2415,7 +2445,13 @@ class TelegramBridge:
             return []
         lines = [f"{heading}:"]
         for index, task in tasks:
-            lines.append(f"{index}. {task.mode} | {TelegramBridge._format_scheduled_task_run_at(task)}")
+            suffix = "" if task.cron_expression is None else f" (recurring: {task.cron_expression})"
+            lines.append(f"{index}. {task.mode}{suffix} | {TelegramBridge._format_scheduled_task_run_at(task)}")
+            recipient = None
+            if task.chat_type in GROUP_CHAT_TYPES:
+                recipient = f"@{task.requester_username}" if task.requester_username else task.requester_name
+            if recipient:
+                lines.append(f"  to: {recipient}")
             lines.append(f"  {TelegramBridge._scheduled_task_preview(task)}")
         return lines
 
@@ -2981,11 +3017,20 @@ class TelegramBridge:
             )
 
     @staticmethod
-    def _scheduled_anchor_message_id(task: ScheduledTask) -> int:
-        anchor_message_id = task.anchor_message_id
-        if anchor_message_id is None:
-            raise ScheduledTaskExecutionError(SCHEDULED_MISSING_ANCHOR_ERROR)
-        return anchor_message_id
+    def _scheduled_reply_to(task: ScheduledTask) -> int | None:
+        return task.anchor_message_id or task.source_message_id
+
+    @staticmethod
+    def _scheduled_requester_mention(task: ScheduledTask) -> str:
+        if task.chat_type not in GROUP_CHAT_TYPES or task.requester_user_id is None:
+            return ""
+        name = (task.requester_name or task.requester_username or "").strip()
+        return mention_markdown(task.requester_user_id, name or "there")
+
+    @classmethod
+    def _scheduled_text_with_mention(cls, task: ScheduledTask, text: str) -> str:
+        mention = cls._scheduled_requester_mention(task)
+        return f"{mention}\n{text}" if mention else text
 
     async def _send_scheduled_status_message(self, *, task: ScheduledTask, text: str) -> None:
         app = self._app
@@ -2994,8 +3039,8 @@ class TelegramBridge:
         await self._send_markdown_to_chat(
             bot=app.bot,
             chat_id=task.chat_id,
-            text=text,
-            reply_to_message_id=self._scheduled_anchor_message_id(task),
+            text=self._scheduled_text_with_mention(task, text),
+            reply_to_message_id=self._scheduled_reply_to(task),
         )
 
     async def _execute_scheduled_notification(self, task: ScheduledTask) -> None:
@@ -3006,8 +3051,8 @@ class TelegramBridge:
         await self._send_markdown_to_chat(
             bot=app.bot,
             chat_id=task.chat_id,
-            text=final_text,
-            reply_to_message_id=self._scheduled_anchor_message_id(task),
+            text=self._scheduled_text_with_mention(task, final_text),
+            reply_to_message_id=self._scheduled_reply_to(task),
         )
 
     async def _execute_scheduled_prompt(self, task: ScheduledTask) -> None:
@@ -3023,7 +3068,7 @@ class TelegramBridge:
             message = "Could not run automatically: scheduled prompt is empty."
             await self._send_scheduled_status_message(task=task, text=message)
             raise ScheduledTaskExecutionError(message)
-        anchor_message_id = self._scheduled_anchor_message_id(task)
+        reply_to_message_id = self._scheduled_reply_to(task)
         lock = await self._acquire_scheduled_prompt_lock(task.chat_id)
         try:
             session_context = self._active_session_context(chat_id=task.chat_id)
@@ -3052,8 +3097,9 @@ class TelegramBridge:
             try:
                 await self._send_agent_reply_to_chat(
                     chat_id=task.chat_id,
-                    reply_to_message_id=anchor_message_id,
+                    reply_to_message_id=reply_to_message_id,
                     reply=reply,
+                    prefix=self._scheduled_requester_mention(task),
                 )
             except Exception as exc:
                 message = f"Could not deliver scheduled reply: {exc}"
@@ -3076,8 +3122,9 @@ class TelegramBridge:
         self,
         *,
         chat_id: int,
-        reply_to_message_id: int,
+        reply_to_message_id: int | None,
         reply: AgentReply,
+        prefix: str | None = None,
     ) -> None:
         app = self._app
         if app is None:
@@ -3097,10 +3144,11 @@ class TelegramBridge:
                 payload=file_payload,
             )
         if reply.text.strip():
+            text = f"{prefix}\n{reply.text}" if prefix else reply.text
             await self._send_markdown_to_chat(
                 bot=app.bot,
                 chat_id=chat_id,
-                text=reply.text,
+                text=text,
                 reply_to_message_id=reply_to_message_id,
             )
 

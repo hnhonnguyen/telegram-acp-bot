@@ -9,11 +9,16 @@ import pytest
 from tests.mcp.support import (
     STATE_FILE_ENV,
     TOKEN_ENV,
+    PromptRequester,
     mcp_channel,
     save_last_session_id,
     save_prompt_message_id,
+    save_prompt_requester,
     save_session_chat_map,
 )
+
+PROMPT_MESSAGE_ID = 42
+REQUESTER_USER_ID = 88
 
 
 def test_resolve_request_context_reports_missing_token_by_default():
@@ -74,7 +79,7 @@ def test_resolve_request_context_uses_last_active_session_when_multiple_mappings
     result = mcp_channel._resolve_request_context(session_id=None)
 
     assert result == mcp_channel._RequestContext(
-        token="TOKEN", chat_id=456, session_id="s2", prompt_message_id=None, state_file=state_file
+        token="TOKEN", chat_id=456, session_id="s2", prompt_message_id=None, requester=None, state_file=state_file
     )
 
 
@@ -88,8 +93,37 @@ def test_resolve_request_context_includes_active_prompt_message_id(tmp_path: Pat
     result = mcp_channel._resolve_request_context(session_id="s1")
 
     assert result == mcp_channel._RequestContext(
-        token="TOKEN", chat_id=123, session_id="s1", prompt_message_id=42, state_file=state_file
+        token="TOKEN", chat_id=123, session_id="s1", prompt_message_id=42, requester=None, state_file=state_file
     )
+    assert result.source_message_id == PROMPT_MESSAGE_ID
+    assert result.requester_user_id is None
+    assert result.requester_username is None
+    assert result.requester_name is None
+    assert result.chat_type is None
+
+
+def test_resolve_request_context_includes_requester(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    state_file = tmp_path / "state.json"
+    requester = PromptRequester(
+        user_id=88,
+        username="alice",
+        display_name="Alice Doe",
+        chat_type="group",
+    )
+    save_session_chat_map(state_file, {"s1": 123})
+    save_prompt_message_id(state_file, "s1", 42)
+    save_prompt_requester(state_file, "s1", requester)
+    monkeypatch.setenv(TOKEN_ENV, "TOKEN")
+    monkeypatch.setenv(STATE_FILE_ENV, str(state_file))
+
+    result = mcp_channel._resolve_request_context(session_id="s1")
+
+    assert isinstance(result, mcp_channel._RequestContext)
+    assert result.requester == requester
+    assert result.requester_user_id == REQUESTER_USER_ID
+    assert result.requester_username == "alice"
+    assert result.requester_name == "Alice Doe"
+    assert result.chat_type == "group"
 
 
 def test_resolve_request_context_ignores_stale_last_session_id(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

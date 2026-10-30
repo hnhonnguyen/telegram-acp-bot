@@ -12,6 +12,7 @@ from telegram_acp_bot.scheduled_tasks.models import (
     ScheduledTaskDeferredError,
     ScheduledTaskExecutionError,
 )
+from telegram_acp_bot.scheduled_tasks.recurrence import InvalidCronExpressionError, next_occurrence
 from telegram_acp_bot.scheduled_tasks.store import ScheduledTaskStore, utc_now
 
 logger = logging.getLogger(__name__)
@@ -93,9 +94,29 @@ class ScheduledTaskScheduler:
         except ScheduledTaskDeferredError:
             await asyncio.to_thread(self._store.release_task, task.id)
         except ScheduledTaskExecutionError as exc:
-            await asyncio.to_thread(self._store.mark_failed, task.id, error=str(exc))
+            await self._finish_claimed_task(task, error=str(exc))
         except Exception as exc:
             logger.exception("Unhandled error while running scheduled task %s", task.id)
-            await asyncio.to_thread(self._store.mark_failed, task.id, error=str(exc))
+            await self._finish_claimed_task(task, error=str(exc))
         else:
-            await asyncio.to_thread(self._store.mark_done, task.id)
+            await self._finish_claimed_task(task, error=None)
+
+    async def _finish_claimed_task(self, task: ScheduledTask, *, error: str | None) -> None:
+        if task.cron_expression is None:
+            if error is None:
+                await asyncio.to_thread(self._store.mark_done, task.id)
+            else:
+                await asyncio.to_thread(self._store.mark_failed, task.id, error=error)
+            return
+
+        try:
+            next_run = next_occurrence(task.cron_expression, after=utc_now())
+        except InvalidCronExpressionError as exc:
+            logger.exception("Scheduled task %s has an invalid cron expression", task.id)
+            await asyncio.to_thread(self._store.mark_failed, task.id, error=error or str(exc))
+            return
+
+        try:
+            await asyncio.to_thread(self._store.reschedule_task, task.id, run_at=next_run, error=error)
+        except Exception:
+            logger.exception("Failed to reschedule recurring task %s", task.id)
