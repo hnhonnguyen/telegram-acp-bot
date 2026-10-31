@@ -1897,6 +1897,127 @@ async def test_reply_with_no_message_object():
     await bridge.help(update, make_context())
 
 
+TABLE_REPLY = "| Step | Task |\n|------|------|\n| 1 | Research |\n| 2 | Implement |"
+
+
+async def test_contains_markdown_table_ignores_fenced_code():
+    assert TelegramBridge._contains_markdown_table(TABLE_REPLY)
+    assert TelegramBridge._contains_markdown_table("Step | Task\n--- | ---\n1 | Research")
+    assert not TelegramBridge._contains_markdown_table("Step | Task without a separator")
+    assert not TelegramBridge._contains_markdown_table(f"```\n{TABLE_REPLY}\n```")
+
+
+async def test_reply_agent_sends_tables_as_rich_messages():
+    update = make_update()
+    assert update.message is not None
+
+    await TelegramBridge._reply_agent(update, TABLE_REPLY)
+
+    bot = update.message.get_bot()
+    assert bot.api_requests[0][0] == "sendRichMessage"
+    payload = bot.api_requests[0][1]
+    assert payload["rich_message"] == {"markdown": TABLE_REPLY}
+    assert payload["reply_parameters"] == {"message_id": 1, "allow_sending_without_reply": True}
+    assert update.message.replies == []
+
+
+async def test_reply_agent_falls_back_when_rich_send_fails():
+    update = make_update()
+    assert update.message is not None
+    update.message.get_bot().fail_api_requests = True
+
+    await TelegramBridge._reply_agent(update, TABLE_REPLY)
+
+    assert update.message.get_bot().api_requests[0][0] == "sendRichMessage"
+    assert update.message.replies
+
+
+async def test_send_markdown_to_chat_uses_rich_message_for_tables():
+    bot = DummyBot()
+    keyboard = InlineKeyboardMarkup([])
+
+    message = await TelegramBridge._send_markdown_to_chat(
+        bot=cast(Bot, bot),
+        chat_id=42,
+        text=TABLE_REPLY,
+        reply_markup=keyboard,
+        reply_to_message_id=7,
+    )
+
+    assert message is not None
+    assert bot.api_requests == [
+        (
+            "sendRichMessage",
+            {
+                "chat_id": 42,
+                "rich_message": {"markdown": TABLE_REPLY},
+                "reply_markup": keyboard,
+                "reply_parameters": {"message_id": 7, "allow_sending_without_reply": True},
+            },
+        )
+    ]
+    assert bot.sent_messages == []
+
+
+async def test_send_markdown_to_chat_falls_back_when_rich_send_fails():
+    bot = DummyBot()
+    bot.fail_api_requests = True
+
+    await TelegramBridge._send_markdown_to_chat(bot=cast(Bot, bot), chat_id=42, text=TABLE_REPLY)
+
+    assert bot.api_requests[0][0] == "sendRichMessage"
+    assert bot.sent_messages
+
+
+async def test_edit_markdown_in_chat_uses_rich_message_for_tables():
+    bot = DummyBot()
+    keyboard = InlineKeyboardMarkup([])
+
+    edited = await TelegramBridge._edit_markdown_in_chat(
+        bot=cast(Bot, bot),
+        chat_id=42,
+        message_id=9,
+        text=TABLE_REPLY,
+        reply_markup=keyboard,
+    )
+
+    assert edited is True
+    assert bot.api_requests == [
+        (
+            "editMessageText",
+            {
+                "chat_id": 42,
+                "message_id": 9,
+                "rich_message": {"markdown": TABLE_REPLY},
+                "reply_markup": keyboard,
+            },
+        )
+    ]
+    assert bot.edited_messages == []
+
+
+async def test_edit_markdown_in_chat_falls_back_to_entities_when_rich_edit_fails():
+    bot = DummyBot()
+    bot.fail_api_requests = True
+
+    edited = await TelegramBridge._edit_markdown_in_chat(
+        bot=cast(Bot, bot),
+        chat_id=42,
+        message_id=9,
+        text=TABLE_REPLY,
+    )
+
+    assert edited is True
+    assert bot.api_requests[0][0] == "editMessageText"
+    assert bot.edited_messages
+
+
+async def test_tables_over_the_rich_message_limit_use_entities():
+    text = f"{TABLE_REPLY}\n" + "x" * 32768
+
+    assert not TelegramBridge._can_use_rich_message(text)
+
+
 async def test_reply_agent_with_no_message_object():
     update = make_update(with_message=False)
     await TelegramBridge._reply_agent(update, "x")

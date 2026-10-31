@@ -11,7 +11,7 @@ from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from io import BytesIO
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 from urllib.parse import urlparse
 from uuid import uuid4
 
@@ -123,6 +123,7 @@ from telegram_acp_bot.telegram.constants import (
     SCHEDULED_KEYBOARD_MAX_ROWS,
     SEARCH_LABEL_NEUTRAL,
     SEARCH_LABEL_WEB,
+    TELEGRAM_MAX_RICH_MESSAGE_LENGTH,
     TELEGRAM_MAX_UTF16_MESSAGE_LENGTH,
     TELEGRAM_UNCHANGED_MESSAGE_ERROR,
 )
@@ -146,6 +147,8 @@ _SCHEDULE_DELAY_RE = re.compile(r"^(\d+)(s|m|h|d)$", re.IGNORECASE)
 GROUP_CHAT_TYPES = frozenset({"group", "supergroup"})
 _AGENT_COMMAND_TOKEN_RE = re.compile(r"^/([A-Za-z0-9_-]{1,32})(?:@([A-Za-z0-9_]{1,32}))?(?:\s|$)")
 _AGENT_COMMAND_BUTTON_NAME_RE = re.compile(r"[A-Za-z0-9_-]{1,32}")
+_MARKDOWN_FENCE_RE = re.compile(r"^(?:`{3,}|~{3,})")
+_MARKDOWN_TABLE_SEPARATOR_RE = re.compile(r"^:?-{3,}:?$")
 
 
 def _text_mentions_handle(text: str | None, entities: tuple[MessageEntity, ...] | None, handle: str) -> bool:
@@ -2792,7 +2795,90 @@ class TelegramBridge:
         return f"{fence}\n{text}\n{fence}"
 
     @staticmethod
+    def _contains_markdown_table(text: str) -> bool:
+        """Return whether *text* has a GFM table outside fenced code blocks."""
+        fenced = False
+        previous_line_has_pipe = False
+        for raw_line in text.splitlines():
+            line = raw_line.strip()
+            if _MARKDOWN_FENCE_RE.match(line):
+                fenced = not fenced
+                previous_line_has_pipe = False
+                continue
+            if fenced:
+                continue
+            if previous_line_has_pipe and TelegramBridge._is_markdown_table_separator(line):
+                return True
+            previous_line_has_pipe = "|" in line
+        return False
+
+    @staticmethod
+    def _is_markdown_table_separator(line: str) -> bool:
+        if "|" not in line:
+            return False
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        return bool(cells) and all(_MARKDOWN_TABLE_SEPARATOR_RE.fullmatch(cell) for cell in cells)
+
+    @staticmethod
+    def _can_use_rich_message(text: str) -> bool:
+        return len(text) <= TELEGRAM_MAX_RICH_MESSAGE_LENGTH and TelegramBridge._contains_markdown_table(text)
+
+    @staticmethod
+    async def _send_rich_message(
+        *,
+        bot: Bot,
+        chat_id: int,
+        text: str,
+        reply_markup: InlineKeyboardMarkup | None = None,
+        reply_to_message_id: int | None = None,
+    ) -> Message:
+        payload: dict[str, Any] = {
+            "chat_id": chat_id,
+            "rich_message": {"markdown": text},
+        }
+        if reply_markup is not None:
+            payload["reply_markup"] = reply_markup
+        if reply_to_message_id is not None:
+            payload["reply_parameters"] = {
+                "message_id": reply_to_message_id,
+                "allow_sending_without_reply": True,
+            }
+        return cast(Message, await bot.do_api_request("sendRichMessage", payload, return_type=Message))
+
+    @staticmethod
+    async def _edit_rich_message(
+        *,
+        bot: Bot,
+        chat_id: int,
+        message_id: int,
+        text: str,
+        reply_markup: InlineKeyboardMarkup | None = None,
+    ) -> bool:
+        payload: dict[str, Any] = {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "rich_message": {"markdown": text},
+        }
+        if reply_markup is not None:
+            payload["reply_markup"] = reply_markup
+        try:
+            await bot.do_api_request("editMessageText", payload)
+        except TelegramError as exc:
+            return TelegramBridge._is_not_modified_error(exc)
+        return True
+
+    @staticmethod
     async def _reply_markdown_message(message: Message, *, text: str) -> Message | None:
+        if TelegramBridge._can_use_rich_message(text):
+            try:
+                return await TelegramBridge._send_rich_message(
+                    bot=message.get_bot(),
+                    chat_id=message.chat_id,
+                    text=text,
+                    reply_to_message_id=message.message_id,
+                )
+            except TelegramError:
+                pass
         first_message: Message | None = None
         try:
             for chunk_text, chunk_entities in TelegramBridge._render_markdown_chunks(text):
@@ -2909,6 +2995,17 @@ class TelegramBridge:
         reply_markup: InlineKeyboardMarkup | None = None,
         reply_to_message_id: int | None = None,
     ) -> Message | None:
+        if TelegramBridge._can_use_rich_message(text):
+            try:
+                return await TelegramBridge._send_rich_message(
+                    bot=bot,
+                    chat_id=chat_id,
+                    text=text,
+                    reply_markup=reply_markup,
+                    reply_to_message_id=reply_to_message_id,
+                )
+            except TelegramError:
+                pass
         try:
             chunks = TelegramBridge._render_markdown_chunks(text)
         except (RuntimeError, ValueError, TypeError):
@@ -2968,6 +3065,14 @@ class TelegramBridge:
         editing is not possible (API error, or content spans multiple chunks).
         Multi-chunk content signals to the caller to fall back to normal delivery.
         """
+        if TelegramBridge._can_use_rich_message(text) and await TelegramBridge._edit_rich_message(
+            bot=bot,
+            chat_id=chat_id,
+            message_id=message_id,
+            text=text,
+            reply_markup=reply_markup,
+        ):
+            return True
         try:
             chunks = TelegramBridge._render_markdown_chunks(text)
         except (RuntimeError, ValueError, TypeError):

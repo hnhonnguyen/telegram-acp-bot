@@ -26,6 +26,8 @@ RESUME_KEYBOARD_MAX_ROWS = 10
 SCHEDULED_KEYBOARD_MAX_ROWS = 10
 RESTART_EXIT_CODE = 75
 TELEGRAM_MAX_UTF16_MESSAGE_LENGTH = 4096
+# Bot API 10.1 rich messages accept GFM tables and a larger payload than entity text.
+TELEGRAM_MAX_RICH_MESSAGE_LENGTH = 32768
 TELEGRAM_UNCHANGED_MESSAGE_ERROR = "message is not modified"
 BOT_COMMANDS: tuple[tuple[str, str], ...] = (
     ("start", "Start or resume in the default workspace"),

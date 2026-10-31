@@ -528,6 +528,53 @@ async def test_verbose_finalize_reply_handles_empty_text_and_empty_chunks(mocker
     )
 
 
+async def test_verbose_finalize_reply_edits_rich_table_in_place():
+    bridge = make_verbose_bridge()
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+    handler = cast(bot_module._VerboseActivityModeHandler, bridge._activity_handler(chat_id=TEST_CHAT_ID))
+    handler._store_message(
+        chat_id=TEST_CHAT_ID,
+        slot_key="activity:reply",
+        message=bot_module._VerboseActivityMessage(
+            activity_id="reply",
+            kind="reply",
+            title="",
+            message_id=1,
+            source_text="preview",
+        ),
+    )
+    table = "| Step | Task |\n|------|------|\n| 1 | Research |"
+
+    assert await handler.finalize_reply(chat_id=TEST_CHAT_ID, update=cast(Update, make_update()), text=table) == 1
+
+    assert bot.api_requests[0][0] == "editMessageText"
+    assert bot.api_requests[0][1]["rich_message"] == {"markdown": table}
+
+
+async def test_verbose_finalize_reply_deletes_preview_when_rich_table_edit_fails(mocker):
+    bridge = make_verbose_bridge()
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+    handler = cast(bot_module._VerboseActivityModeHandler, bridge._activity_handler(chat_id=TEST_CHAT_ID))
+    handler._store_message(
+        chat_id=TEST_CHAT_ID,
+        slot_key="activity:reply",
+        message=bot_module._VerboseActivityMessage(
+            activity_id="reply",
+            kind="reply",
+            title="",
+            message_id=1,
+            source_text="preview",
+        ),
+    )
+    mocker.patch.object(TelegramBridge, "_edit_markdown_in_chat", return_value=False)
+    table = "| Step | Task |\n|------|------|\n| 1 | Research |"
+
+    assert await handler.finalize_reply(chat_id=TEST_CHAT_ID, update=cast(Update, make_update()), text=table) is None
+    assert (TEST_CHAT_ID, 1) in bot.deleted_message_ids
+
+
 async def test_verbose_final_reply_deletes_preview_when_final_edit_fails():
 
     class StreamingReplyService(LiveActivityService):

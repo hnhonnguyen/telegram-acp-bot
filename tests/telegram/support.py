@@ -98,6 +98,8 @@ class DummyMessage:
         text: str | None = None,
         *,
         message_id: int = 1,
+        chat_id: int = 100,
+        bot: DummyBot | None = None,
         caption: str | None = None,
         photo: Sequence[object] | None = None,
         document: object | None = None,
@@ -106,6 +108,8 @@ class DummyMessage:
         reply_to_message: object | None = None,
     ) -> None:
         self.message_id = message_id
+        self.chat_id = chat_id
+        self._bot = bot if bot is not None else DummyBot()
         self.text = text
         self.caption = caption
         self.photo = list(photo) if photo is not None else []
@@ -120,6 +124,9 @@ class DummyMessage:
         self.fail_entities = False
         self.photos: list[object] = []
         self.documents: list[object] = []
+
+    def get_bot(self) -> DummyBot:
+        return self._bot
 
     async def reply_text(self, text: str, **kwargs: object) -> SimpleNamespace:
         if self.fail_markdown and kwargs.get("parse_mode") is not None:
@@ -162,6 +169,24 @@ class DummyBot:
         self.edited_messages: list[dict[str, object]] = []
         self.deleted_message_ids: list[tuple[int, int]] = []
         self.reactions: list[dict[str, object]] = []
+        self.api_requests: list[tuple[str, dict[str, object]]] = []
+        self.fail_api_requests = False
+
+    async def do_api_request(
+        self,
+        endpoint: str,
+        api_kwargs: dict[str, object] | None = None,
+        return_type: object | None = None,
+    ) -> object:
+        del return_type
+        self.api_requests.append((endpoint, dict(api_kwargs or {})))
+        if self.fail_api_requests:
+            raise MarkdownFailureError
+        if endpoint == "sendRichMessage":
+            msg = SimpleNamespace(message_id=self._next_message_id)
+            self._next_message_id += 1
+            return msg
+        return True
 
     async def send_chat_action(self, chat_id: int, action: str) -> None:
         self.actions.append((chat_id, action))
@@ -626,6 +651,7 @@ def make_update(  # noqa: PLR0913
         DummyMessage(
             text,
             message_id=message_id,
+            chat_id=chat_id,
             caption=caption,
             photo=photo,
             document=document,

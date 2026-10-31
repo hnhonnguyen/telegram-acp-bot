@@ -205,7 +205,7 @@ class _VerboseActivityModeHandler(_ActivityModeHandler):
             self._clear_pending(chat_id=chat_id, slot_key=slot_key)
             await self._apply_block_locked(chat_id=chat_id, slot_key=slot_key, block=block)
 
-    async def finalize_reply(self, *, chat_id: int, update: Update, text: str) -> int | None:
+    async def finalize_reply(self, *, chat_id: int, update: Update, text: str) -> int | None:  # noqa: PLR0911
         del update
         app = self._bridge._app
         if app is None:
@@ -219,6 +219,18 @@ class _VerboseActivityModeHandler(_ActivityModeHandler):
             self._clear_message(chat_id=chat_id, slot_key="activity:reply")
             if not text:
                 return active.message_id
+            if self._bridge._can_use_rich_message(text):
+                edited = await self._bridge._edit_markdown_in_chat(
+                    bot=app.bot,
+                    chat_id=chat_id,
+                    message_id=active.message_id,
+                    text=text,
+                )
+                if edited:
+                    return active.message_id
+                with suppress(TelegramError):
+                    await app.bot.delete_message(chat_id=chat_id, message_id=active.message_id)
+                return None
             chunks = self._bridge._render_markdown_chunks(text)
             if not chunks:
                 return active.message_id
