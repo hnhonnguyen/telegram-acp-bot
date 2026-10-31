@@ -38,6 +38,13 @@ from tests.telegram.support import DummyMessage as DummyBotMessage
 
 pytestmark = pytest.mark.asyncio
 ANCHOR_MESSAGE_ID = 42
+
+
+def _reply_target(message: dict[str, object]) -> int:
+    parameters = cast(dict[str, int], message["reply_parameters"])
+    return parameters["message_id"]
+
+
 BOUND_REPLY_MESSAGE_ID = 11
 SOURCE_MESSAGE_ID = 55
 UNEXPECTED_EXECUTION_ERROR = "unexpected boom"
@@ -754,7 +761,7 @@ async def test_execute_scheduled_prompt_replies_to_anchor_message():
     assert service.prompt_calls == [(TEST_CHAT_ID, "check again")]
     assert bot.actions == [(TEST_CHAT_ID, "typing")]
     assert bot.sent_messages[-1]["text"] == "Scheduled reply"
-    assert bot.sent_messages[-1]["reply_to_message_id"] == ANCHOR_MESSAGE_ID
+    assert _reply_target(bot.sent_messages[-1]) == ANCHOR_MESSAGE_ID
 
 
 async def test_execute_scheduled_prompt_mentions_requester_in_group():
@@ -887,7 +894,7 @@ async def test_execute_scheduled_notification_sends_without_anchor():
     await bridge.execute_scheduled_task(make_task(mode="notify", anchor_message_id=None))
 
     assert bot.sent_messages[-1]["text"] == "Ping now"
-    assert "reply_to_message_id" not in bot.sent_messages[-1]
+    assert "reply_parameters" not in bot.sent_messages[-1]
 
 
 async def test_execute_scheduled_notification_falls_back_to_source_message():
@@ -902,7 +909,7 @@ async def test_execute_scheduled_notification_falls_back_to_source_message():
         make_task(mode="notify", anchor_message_id=None, source_message_id=SOURCE_MESSAGE_ID),
     )
 
-    assert bot.sent_messages[-1]["reply_to_message_id"] == SOURCE_MESSAGE_ID
+    assert _reply_target(bot.sent_messages[-1]) == SOURCE_MESSAGE_ID
 
 
 async def test_execute_scheduled_notification_mentions_requester_in_group():
@@ -954,7 +961,7 @@ async def test_execute_scheduled_notification_replies_to_anchor_message():
     await bridge.execute_scheduled_task(make_task(mode="notify", notify_text="Ping now"))
 
     assert bot.sent_messages[-1]["text"] == "Ping now"
-    assert bot.sent_messages[-1]["reply_to_message_id"] == ANCHOR_MESSAGE_ID
+    assert _reply_target(bot.sent_messages[-1]) == ANCHOR_MESSAGE_ID
 
 
 async def test_execute_scheduled_prompt_requires_running_app():
@@ -981,7 +988,7 @@ async def test_execute_scheduled_prompt_starts_session_when_missing():
     assert service.new_session_calls == [(TEST_CHAT_ID, Path(".").expanduser())]
     assert service.prompt_calls == [(TEST_CHAT_ID, "check again")]
     assert bot.sent_messages[-1]["text"] == "Scheduled reply"
-    assert bot.sent_messages[-1]["reply_to_message_id"] == ANCHOR_MESSAGE_ID
+    assert _reply_target(bot.sent_messages[-1]) == ANCHOR_MESSAGE_ID
 
 
 async def test_execute_scheduled_prompt_reports_session_start_failure():
@@ -998,7 +1005,7 @@ async def test_execute_scheduled_prompt_reports_session_start_failure():
 
     assert service.prompt_calls == []
     assert bot.sent_messages[-1]["text"] == "Could not run automatically: failed to start session: spawn boom"
-    assert bot.sent_messages[-1]["reply_to_message_id"] == ANCHOR_MESSAGE_ID
+    assert _reply_target(bot.sent_messages[-1]) == ANCHOR_MESSAGE_ID
 
 
 async def test_execute_scheduled_prompt_rejects_empty_prompt():
@@ -1013,7 +1020,7 @@ async def test_execute_scheduled_prompt_rejects_empty_prompt():
         await bridge.execute_scheduled_task(make_task(mode="prompt_agent", prompt_text="   "))
 
     assert bot.sent_messages[-1]["text"] == "Could not run automatically: scheduled prompt is empty."
-    assert bot.sent_messages[-1]["reply_to_message_id"] == ANCHOR_MESSAGE_ID
+    assert _reply_target(bot.sent_messages[-1]) == ANCHOR_MESSAGE_ID
 
 
 async def test_execute_scheduled_prompt_reports_output_limit_error():
@@ -1028,7 +1035,7 @@ async def test_execute_scheduled_prompt_reports_output_limit_error():
         await bridge.execute_scheduled_task(make_task(mode="prompt_agent", prompt_text="check again"))
 
     assert bot.sent_messages[-1]["text"] == "Could not run automatically: agent output exceeded ACP stdio limit."
-    assert bot.sent_messages[-1]["reply_to_message_id"] == ANCHOR_MESSAGE_ID
+    assert _reply_target(bot.sent_messages[-1]) == ANCHOR_MESSAGE_ID
 
 
 async def test_execute_scheduled_prompt_reports_generic_error():
@@ -1043,7 +1050,7 @@ async def test_execute_scheduled_prompt_reports_generic_error():
         await bridge.execute_scheduled_task(make_task(mode="prompt_agent", prompt_text="check again"))
 
     assert bot.sent_messages[-1]["text"] == "Could not run automatically: agent boom"
-    assert bot.sent_messages[-1]["reply_to_message_id"] == ANCHOR_MESSAGE_ID
+    assert _reply_target(bot.sent_messages[-1]) == ANCHOR_MESSAGE_ID
 
 
 async def test_execute_scheduled_prompt_reports_empty_agent_reply():
@@ -1058,7 +1065,7 @@ async def test_execute_scheduled_prompt_reports_empty_agent_reply():
         await bridge.execute_scheduled_task(make_task(mode="prompt_agent", prompt_text="check again"))
 
     assert bot.sent_messages[-1]["text"] == "Could not run automatically: no active session."
-    assert bot.sent_messages[-1]["reply_to_message_id"] == ANCHOR_MESSAGE_ID
+    assert _reply_target(bot.sent_messages[-1]) == ANCHOR_MESSAGE_ID
 
 
 async def test_execute_scheduled_prompt_reports_delivery_failure(mocker):
@@ -1074,7 +1081,7 @@ async def test_execute_scheduled_prompt_reports_delivery_failure(mocker):
         await bridge.execute_scheduled_task(make_task(mode="prompt_agent", prompt_text="check again"))
 
     assert bot.sent_messages[-1]["text"] == "Could not deliver scheduled reply: send boom"
-    assert bot.sent_messages[-1]["reply_to_message_id"] == ANCHOR_MESSAGE_ID
+    assert _reply_target(bot.sent_messages[-1]) == ANCHOR_MESSAGE_ID
 
 
 async def test_send_agent_reply_to_chat_requires_running_app():
@@ -1122,7 +1129,7 @@ async def test_send_agent_reply_to_chat_sends_attachments_and_text():
 
     assert bot.sent_photos[-1]["reply_to_message_id"] == ANCHOR_MESSAGE_ID
     assert bot.sent_documents[-1]["reply_to_message_id"] == ANCHOR_MESSAGE_ID
-    assert bot.sent_messages[-1]["reply_to_message_id"] == ANCHOR_MESSAGE_ID
+    assert _reply_target(bot.sent_messages[-1]) == ANCHOR_MESSAGE_ID
 
 
 async def test_send_image_and_file_to_chat_without_reply_target():

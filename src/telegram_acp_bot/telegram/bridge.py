@@ -148,7 +148,6 @@ GROUP_CHAT_TYPES = frozenset({"group", "supergroup"})
 _AGENT_COMMAND_TOKEN_RE = re.compile(r"^/([A-Za-z0-9_-]{1,32})(?:@([A-Za-z0-9_]{1,32}))?(?:\s|$)")
 _AGENT_COMMAND_BUTTON_NAME_RE = re.compile(r"[A-Za-z0-9_-]{1,32}")
 _MARKDOWN_FENCE_RE = re.compile(r"^(?:`{3,}|~{3,})")
-_MARKDOWN_TABLE_SEPARATOR_RE = re.compile(r"^:?-{3,}:?$")
 
 
 def _text_mentions_handle(text: str | None, entities: tuple[MessageEntity, ...] | None, handle: str) -> bool:
@@ -351,6 +350,8 @@ class TelegramBridge:
         self._elicitation_selections: dict[str, dict[str, list[int]]] = {}
         # Question message per pending elicitation, so its keyboard can be removed once it stops waiting.
         self._elicitation_messages: dict[str, int | None] = {}
+        # Markdown source of the offered question, so the answer record keeps rich formatting.
+        self._elicitation_markdown: dict[str, str] = {}
         self._status_reactions = StatusReactionSender(config.status_reactions)
         self._activity_handlers: dict[ActivityMode, _ActivityModeHandler] = {
             "normal": _NormalActivityModeHandler(self),
@@ -857,10 +858,12 @@ class TelegramBridge:
             return
 
         await self._remember_elicitation_form(request)
+        text = self._format_elicitation_text(request)
+        self._elicitation_markdown[request.request_id] = text
         sent = await self._send_markdown_to_chat(
             bot=self._app.bot,
             chat_id=request.chat_id,
-            text=self._format_elicitation_text(request),
+            text=text,
             reply_markup=self._elicitation_keyboard(request, selections={}),
         )
         self._elicitation_messages[request.request_id] = getattr(sent, "message_id", None)
@@ -909,6 +912,7 @@ class TelegramBridge:
         unanswered = self._elicitation_forms.pop(request_id, None) is not None
         message_id = self._elicitation_messages.pop(request_id, None)
         self._elicitation_selections.pop(request_id, None)
+        self._elicitation_markdown.pop(request_id, None)
         if not unanswered or message_id is None:
             return
         with bind_log_context(chat_id=chat_id):
@@ -996,11 +1000,12 @@ class TelegramBridge:
         self._elicitation_forms.pop(request_id, None)
         self._elicitation_selections.pop(request_id, None)
         self._elicitation_messages.pop(request_id, None)
+        self._elicitation_markdown.pop(request_id, None)
 
     @staticmethod
     def _format_elicitation_text(request: ElicitationRequest) -> str:
         numbered = len(request.questions) > 1
-        lines = ["*❓ The agent is asking*", request.title]
+        lines = ["**❓ The agent is asking**", request.title]
         for index, question in enumerate(request.questions, start=1):
             prefix = f"{index}. " if numbered else ""
             suffix = " _(pick one or more)_" if question.multiple else ""
@@ -1095,6 +1100,7 @@ class TelegramBridge:
             request_id=form.request_id,
             answers=answers,
         )
+        source_text = self._elicitation_markdown.get(form.request_id)
         self._forget_elicitation(form.request_id)
         if not accepted:
             with bind_log_context(chat_id=form.chat_id):
@@ -1102,7 +1108,7 @@ class TelegramBridge:
             await query.answer("This question is no longer waiting for an answer.")
             return
         await query.answer(toast)
-        await self._record_elicitation_outcome(form, query=query, answers=answers)
+        await self._record_elicitation_outcome(form, query=query, answers=answers, source_text=source_text)
 
     async def _record_elicitation_outcome(
         self,
@@ -1110,18 +1116,31 @@ class TelegramBridge:
         *,
         query: CallbackQuery,
         answers: Mapping[str, tuple[str, ...]] | None,
+        source_text: str | None = None,
     ) -> None:
         """Turn the question message into the record of the choice.
 
         The tapped answer is appended to the message that asked, and the same edit drops the
         keyboard — so the question keeps its answer even after the conversation moved on to a new
-        bubble (B30). The appended line carries no formatting, so the original entities stay valid
-        at their offsets. If Telegram refuses the text edit the keyboard is still removed, because
-        a keyboard must never outlive the answer it asked for.
+        bubble (B30). Rich messages are edited from their Markdown source so the question keeps its
+        formatting; other messages use the appended plain text with their original entities. If
+        Telegram refuses the text edit the keyboard is still removed, because a keyboard must never
+        outlive the answer it asked for.
         """
         message = getattr(query, "message", None)
-        original = getattr(message, "text", None) if message is not None else None
+        message_id = getattr(message, "message_id", None)
         line = self._elicitation_answer_line(form, answers=answers)
+        if source_text is not None and message_id is not None and self._app is not None:
+            edited = await TelegramBridge._edit_rich_message(
+                bot=self._app.bot,
+                chat_id=form.chat_id,
+                message_id=message_id,
+                text=f"{source_text}\n\n{line}",
+                reply_markup=cast(Mapping[str, Any], ELICITATION_REMOVED_KEYBOARD["reply_markup"]),
+            )
+            if edited:
+                return
+        original = getattr(message, "text", None) if message is not None else None
         edited_text = f"{original}\n{line}" if original else line
         entities = getattr(message, "entities", None) if message is not None else None
         try:
@@ -2565,7 +2584,7 @@ class TelegramBridge:
         if block.kind == "reply":
             return block.text
         label = TelegramBridge._activity_label(block)
-        text_parts = [f"*{label}*"]
+        text_parts = [f"**{label}**"]
         normalized_title = TelegramBridge._normalize_activity_title(block, workspace=workspace)
         normalized_text = TelegramBridge._normalize_activity_text(block, workspace=workspace)
         if normalized_title and normalized_text and normalized_title == normalized_text:
@@ -2766,7 +2785,7 @@ class TelegramBridge:
     @staticmethod
     def _format_permission_request_text(tool_title: str) -> str:
         title = TelegramBridge._format_permission_tool_title(tool_title)
-        message_parts = ["*⚠️ Permission required*"]
+        message_parts = ["**⚠️ Permission required**"]
         if title:
             message_parts.append(TelegramBridge._render_activity_part(title))
         return "\n\n".join(message_parts)
@@ -2795,33 +2814,101 @@ class TelegramBridge:
         return f"{fence}\n{text}\n{fence}"
 
     @staticmethod
-    def _contains_markdown_table(text: str) -> bool:
-        """Return whether *text* has a GFM table outside fenced code blocks."""
-        fenced = False
-        previous_line_has_pipe = False
-        for raw_line in text.splitlines():
-            line = raw_line.strip()
-            if _MARKDOWN_FENCE_RE.match(line):
-                fenced = not fenced
-                previous_line_has_pipe = False
-                continue
-            if fenced:
-                continue
-            if previous_line_has_pipe and TelegramBridge._is_markdown_table_separator(line):
-                return True
-            previous_line_has_pipe = "|" in line
-        return False
+    def _fence_delimiter(line: str) -> str | None:
+        match = _MARKDOWN_FENCE_RE.match(line.strip())
+        return None if match is None else match.group(0)
 
     @staticmethod
-    def _is_markdown_table_separator(line: str) -> bool:
-        if "|" not in line:
-            return False
-        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
-        return bool(cells) and all(_MARKDOWN_TABLE_SEPARATOR_RE.fullmatch(cell) for cell in cells)
+    def _markdown_blocks(text: str) -> list[str]:
+        """Split Markdown into blank-line blocks while keeping fenced code blocks intact."""
+        blocks: list[str] = []
+        current: list[str] = []
+        fence: str | None = None
+        for line in text.splitlines(keepends=True):
+            delimiter = TelegramBridge._fence_delimiter(line)
+            if delimiter is not None:
+                if fence is None:
+                    fence = delimiter
+                elif delimiter[0] == fence[0] and len(delimiter) >= len(fence):
+                    fence = None
+            current.append(line)
+            if fence is None and not line.strip():
+                blocks.append("".join(current))
+                current = []
+        if current:
+            blocks.append("".join(current))
+        return blocks or [text]
+
+    @staticmethod
+    def _pack_markdown_lines(lines: list[str], max_chars: int) -> list[str]:
+        """Pack lines into pieces no longer than *max_chars*, hard-splitting oversized lines."""
+        pieces: list[str] = []
+        current = ""
+        for source_line in lines:
+            line = source_line
+            while len(line) > max_chars:
+                if current:
+                    pieces.append(current)
+                    current = ""
+                pieces.append(line[:max_chars])
+                line = line[max_chars:]
+            if len(current) + len(line) > max_chars:
+                pieces.append(current)
+                current = ""
+            current += line
+        if current:
+            pieces.append(current)
+        return pieces or [""]
+
+    @staticmethod
+    def _split_oversized_markdown_block(block: str, limit: int) -> list[str]:
+        lines = block.splitlines(keepends=True)
+        opening = TelegramBridge._fence_delimiter(lines[0]) if lines else None
+        if opening is None or len(lines) <= 1:
+            return TelegramBridge._pack_markdown_lines(lines, limit)
+
+        closing = f"{opening}\n"
+        closing_index = len(lines)
+        last_delimiter = TelegramBridge._fence_delimiter(lines[-1])
+        if last_delimiter is not None and lines[-1].strip() == last_delimiter:
+            closing = lines[-1]
+            closing_index = len(lines) - 1
+        inner = lines[1:closing_index]
+        budget = limit - len(lines[0]) - len(closing) - 1
+        if budget < 1:
+            return TelegramBridge._pack_markdown_lines(lines, limit)
+        return [
+            lines[0] + piece + ("" if piece.endswith("\n") else "\n") + closing
+            for piece in TelegramBridge._pack_markdown_lines(inner, budget)
+        ]
+
+    @staticmethod
+    def _split_rich_markdown(text: str) -> list[str]:
+        """Split rich Markdown into API-sized chunks, preferring block boundaries."""
+        limit = TELEGRAM_MAX_RICH_MESSAGE_LENGTH
+        if len(text) <= limit:
+            return [text]
+
+        chunks: list[str] = []
+        current = ""
+        for block in TelegramBridge._markdown_blocks(text):
+            if len(current) + len(block) <= limit:
+                current += block
+                continue
+            if current:
+                chunks.append(current)
+                current = ""
+            if len(block) <= limit:
+                current = block
+                continue
+            chunks.extend(TelegramBridge._split_oversized_markdown_block(block, limit))
+        if current:
+            chunks.append(current)
+        return chunks
 
     @staticmethod
     def _can_use_rich_message(text: str) -> bool:
-        return len(text) <= TELEGRAM_MAX_RICH_MESSAGE_LENGTH and TelegramBridge._contains_markdown_table(text)
+        return len(text) <= TELEGRAM_MAX_RICH_MESSAGE_LENGTH
 
     @staticmethod
     async def _send_rich_message(
@@ -2852,7 +2939,7 @@ class TelegramBridge:
         chat_id: int,
         message_id: int,
         text: str,
-        reply_markup: InlineKeyboardMarkup | None = None,
+        reply_markup: InlineKeyboardMarkup | Mapping[str, Any] | None = None,
     ) -> bool:
         payload: dict[str, Any] = {
             "chat_id": chat_id,
@@ -2868,31 +2955,64 @@ class TelegramBridge:
         return True
 
     @staticmethod
-    async def _reply_markdown_message(message: Message, *, text: str) -> Message | None:
-        if TelegramBridge._can_use_rich_message(text):
-            try:
-                return await TelegramBridge._send_rich_message(
-                    bot=message.get_bot(),
-                    chat_id=message.chat_id,
-                    text=text,
-                    reply_to_message_id=message.message_id,
-                )
-            except TelegramError:
-                pass
+    async def _reply_entity_markdown_message(
+        message: Message,
+        *,
+        text: str,
+        reply_markup: InlineKeyboardMarkup | None = None,
+    ) -> Message | None:
         first_message: Message | None = None
         try:
-            for chunk_text, chunk_entities in TelegramBridge._render_markdown_chunks(text):
+            for index, (chunk_text, chunk_entities) in enumerate(TelegramBridge._render_markdown_chunks(text)):
+                reply_kwargs: dict[str, Any] = {}
+                if index == 0 and reply_markup is not None:
+                    reply_kwargs["reply_markup"] = reply_markup
                 if chunk_entities:
                     try:
-                        sent_message = await message.reply_text(chunk_text, entities=chunk_entities)
+                        sent_message = await message.reply_text(chunk_text, entities=chunk_entities, **reply_kwargs)
                     except TelegramError:
-                        sent_message = await message.reply_text(chunk_text)
+                        sent_message = await message.reply_text(chunk_text, **reply_kwargs)
                 else:
-                    sent_message = await message.reply_text(chunk_text)
+                    sent_message = await message.reply_text(chunk_text, **reply_kwargs)
                 if first_message is None:
                     first_message = sent_message
         except (RuntimeError, ValueError, TypeError):
-            return await message.reply_text(text)
+            if reply_markup is None:
+                return await message.reply_text(text)
+            return await message.reply_text(text, reply_markup=reply_markup)
+        return first_message
+
+    @staticmethod
+    async def _reply_markdown_message(
+        message: Message,
+        *,
+        text: str,
+        reply_markup: InlineKeyboardMarkup | None = None,
+    ) -> Message | None:
+        if not text.strip():
+            return None
+        bot = message.get_bot()
+        chunks = TelegramBridge._split_rich_markdown(text)
+        first_message: Message | None = None
+        for index, chunk in enumerate(chunks):
+            chunk_markup = reply_markup if index == 0 else None
+            try:
+                sent_message = await TelegramBridge._send_rich_message(
+                    bot=bot,
+                    chat_id=message.chat_id,
+                    text=chunk,
+                    reply_markup=chunk_markup,
+                    reply_to_message_id=message.message_id,
+                )
+            except TelegramError:
+                fallback = await TelegramBridge._reply_entity_markdown_message(
+                    message,
+                    text="".join(chunks[index:]),
+                    reply_markup=chunk_markup,
+                )
+                return first_message or fallback
+            if first_message is None:
+                first_message = sent_message
         return first_message
 
     @staticmethod
@@ -2987,7 +3107,7 @@ class TelegramBridge:
         return True
 
     @staticmethod
-    async def _send_markdown_to_chat(
+    async def _send_entity_markdown_to_chat(
         *,
         bot: Bot,
         chat_id: int,
@@ -2995,17 +3115,6 @@ class TelegramBridge:
         reply_markup: InlineKeyboardMarkup | None = None,
         reply_to_message_id: int | None = None,
     ) -> Message | None:
-        if TelegramBridge._can_use_rich_message(text):
-            try:
-                return await TelegramBridge._send_rich_message(
-                    bot=bot,
-                    chat_id=chat_id,
-                    text=text,
-                    reply_markup=reply_markup,
-                    reply_to_message_id=reply_to_message_id,
-                )
-            except TelegramError:
-                pass
         try:
             chunks = TelegramBridge._render_markdown_chunks(text)
         except (RuntimeError, ValueError, TypeError):
@@ -3025,14 +3134,46 @@ class TelegramBridge:
         )
 
     @staticmethod
-    def _render_markdown_preview_chunk(text: str) -> tuple[str, list[MessageEntity] | None] | None:
-        try:
-            chunks = TelegramBridge._render_markdown_chunks(text)
-        except (RuntimeError, ValueError, TypeError):
-            return (TelegramBridge._truncate_preview_text(text), None)
-        if not chunks:
+    async def _send_markdown_to_chat(
+        *,
+        bot: Bot,
+        chat_id: int,
+        text: str,
+        reply_markup: InlineKeyboardMarkup | None = None,
+        reply_to_message_id: int | None = None,
+    ) -> Message | None:
+        if not text.strip():
             return None
-        return chunks[0]
+        chunks = TelegramBridge._split_rich_markdown(text)
+        first_message: Message | None = None
+        for index, chunk in enumerate(chunks):
+            chunk_markup = reply_markup if index == 0 else None
+            try:
+                sent_message = await TelegramBridge._send_rich_message(
+                    bot=bot,
+                    chat_id=chat_id,
+                    text=chunk,
+                    reply_markup=chunk_markup,
+                    reply_to_message_id=reply_to_message_id,
+                )
+            except TelegramError:
+                fallback = await TelegramBridge._send_entity_markdown_to_chat(
+                    bot=bot,
+                    chat_id=chat_id,
+                    text="".join(chunks[index:]),
+                    reply_markup=chunk_markup,
+                    reply_to_message_id=reply_to_message_id,
+                )
+                return first_message or fallback
+            if first_message is None:
+                first_message = sent_message
+        return first_message
+
+    @staticmethod
+    def _render_rich_preview(text: str) -> str | None:
+        if not text.strip():
+            return None
+        return TelegramBridge._truncate_preview_text(text)
 
     @staticmethod
     def _truncate_preview_text(text: str) -> str:

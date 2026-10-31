@@ -129,6 +129,12 @@ def _bot(bridge: TelegramBridge) -> DummyBot:
     return cast(DummyBot, bridge._app.bot)
 
 
+def _recorded_edit(bridge: TelegramBridge) -> dict[str, object]:
+    edits = _bot(bridge).edited_messages
+    assert edits
+    return edits[-1]
+
+
 def _question(
     *,
     field: str = "q0",
@@ -281,7 +287,8 @@ async def test_multi_select_offers_a_submit_row_and_marks_every_pick():
     await bridge.on_elicitation_callback(submit_tap, make_context())
 
     assert submit_query.answers == ["Answer sent."]
-    assert submit_query.texts and _cleared(submit_query)
+    recorded = _recorded_edit(bridge)
+    assert recorded["reply_markup"] == {"inline_keyboard": []}
     assert service.resolved == [(TEST_CHAT_ID, request.request_id, {"q0": ("food",)})]
 
 
@@ -308,9 +315,11 @@ async def test_the_tapped_answer_is_written_on_the_question_message():
     await bridge.on_elicitation_callback(update, make_context())
 
     assert query.answers == ["Answer sent."]
-    recorded = query.texts[-1]
-    assert recorded["text"] == f"The agent is asking\n{ELICITATION_ANSWER_RECORD_PREFIX} Theo tháng"
-    assert recorded["api_kwargs"] == ELICITATION_REMOVED_KEYBOARD
+    recorded = _recorded_edit(bridge)
+    text = cast(str, recorded["text"])
+    assert text.endswith(f"{ELICITATION_ANSWER_RECORD_PREFIX} Theo tháng")
+    assert "Answer Questions" in text
+    assert recorded["reply_markup"] == {"inline_keyboard": []}
     assert service.resolved == [(TEST_CHAT_ID, request.request_id, {"q0": ("month",)})]
 
 
@@ -324,18 +333,46 @@ async def test_a_two_question_answer_numbers_every_choice():
 
     first, _ = _tap(request.request_id, "0.1")
     await bridge.on_elicitation_callback(first, make_context())
-    second, second_query = _tap(request.request_id, "1.1")
+    second, _ = _tap(request.request_id, "1.1")
     await bridge.on_elicitation_callback(second, make_context())
 
-    recorded = second_query.texts[-1]
+    recorded = _recorded_edit(bridge)
     text = cast(str, recorded["text"])
     assert text.endswith(f"{ELICITATION_ANSWER_RECORD_PREFIX} 1. Theo tháng / 2. Tháng 10")
 
 
-async def test_the_answer_record_reuses_the_message_entities():
+async def test_the_answer_record_keeps_the_rich_question():
     bridge, _ = make_elicitation_bridge()
     request = _request()
     await bridge.on_elicitation_request(request)
+
+    entity = MessageEntity(offset=19, length=5, type=MessageEntity.BOLD)
+    tapped = DummyMessage("The agent is asking", message_id=7, entities=[entity])
+    query = TapQuery(f"{ELICITATION_CALLBACK_PREFIX}|{request.request_id}|0.0", message=tapped)
+    update = cast(
+        Update,
+        SimpleNamespace(
+            effective_user=SimpleNamespace(id=1, username=None),
+            effective_chat=SimpleNamespace(id=TEST_CHAT_ID, type="private"),
+            callback_query=query,
+            message=None,
+            effective_message=tapped,
+        ),
+    )
+    await bridge.on_elicitation_callback(update, make_context())
+
+    recorded = _recorded_edit(bridge)
+    rich = cast(dict[str, str], recorded["rich_message"])
+    assert ELICITATION_ANSWER_RECORD_PREFIX in rich["markdown"]
+    assert "**❓ The agent is asking**" in rich["markdown"]
+    assert recorded["reply_markup"] == {"inline_keyboard": []}
+
+
+async def test_answer_record_falls_back_to_entity_edit_when_rich_fails():
+    bridge, _ = make_elicitation_bridge()
+    request = _request()
+    await bridge.on_elicitation_request(request)
+    _bot(bridge).fail_api_requests = True
 
     entity = MessageEntity(offset=19, length=5, type=MessageEntity.BOLD)
     tapped = DummyMessage("The agent is asking", message_id=7, entities=[entity])
@@ -361,6 +398,7 @@ async def test_a_refused_answer_record_still_clears_the_keyboard():
     bridge, service = make_elicitation_bridge()
     request = _request()
     await bridge.on_elicitation_request(request)
+    _bot(bridge).fail_api_requests = True
 
     update, query = _tap(request.request_id, "0.0", text_edit_error=BadRequest("Bad chat"))
     await bridge.on_elicitation_callback(update, make_context())
@@ -464,8 +502,9 @@ async def test_the_skip_button_declines_without_an_answer():
 
     assert query.answers == ["Skipped."]
     assert service.resolved == [(TEST_CHAT_ID, request.request_id, None)]
-    assert query.texts and _cleared(query)
-    assert query.texts[-1]["text"] == f"The agent is asking\n{ELICITATION_SKIP_RECORD}"
+    recorded = _recorded_edit(bridge)
+    assert cast(str, recorded["text"]).endswith(ELICITATION_SKIP_RECORD)
+    assert recorded["reply_markup"] == {"inline_keyboard": []}
 
 
 async def test_a_tap_on_a_question_that_stopped_waiting_is_reported():
@@ -693,6 +732,7 @@ async def test_a_real_edit_failure_still_answers_with_an_error():
     request = _request(_question(options=SPENT_OPTIONS))
 
     await bridge.on_elicitation_request(request)
+    _bot(bridge).fail_api_requests = True
 
     update, query = _tap(request.request_id, ELICITATION_SKIP_TOKEN, edit_error=BadRequest("Bad chat"))
     await bridge.on_elicitation_callback(update, make_context())

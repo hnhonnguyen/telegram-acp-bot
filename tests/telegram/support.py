@@ -11,6 +11,7 @@ import pytest
 from telegram import Bot, CallbackQuery, InlineKeyboardMarkup, MessageEntity, Update
 from telegram.error import BadRequest, TelegramError
 from telegram.ext import AIORateLimiter, Application
+from telegramify_markdown import convert as render_markdown
 
 from telegram_acp_bot.acp.echo_service import EchoAgentService
 from telegram_acp_bot.acp.models import (
@@ -92,6 +93,57 @@ class DummyCancelBoomError(RuntimeError):
         super().__init__("cancel boom")
 
 
+def _rich_markdown(data: dict[str, object]) -> str:
+    rich = data.get("rich_message")
+    if isinstance(rich, dict):
+        markdown = rich.get("markdown")
+        if isinstance(markdown, str):
+            return markdown
+    return ""
+
+
+def _render_rich(markdown: str) -> tuple[str, list[object]]:
+    try:
+        text, entities = render_markdown(markdown)
+        return text, list(entities)
+    except (RuntimeError, ValueError, TypeError):
+        return markdown, []
+
+
+def _render_rich_plain(markdown: str) -> str:
+    return _render_rich(markdown)[0]
+
+
+class MessageReplyBot:
+    """Bot double for reply-side rich sends, mirrored into the message's reply log."""
+
+    def __init__(self, message: DummyMessage) -> None:
+        self.message = message
+        self.api_requests: list[tuple[str, dict[str, object]]] = []
+        self.fail_api_requests = False
+
+    async def do_api_request(
+        self,
+        endpoint: str,
+        api_kwargs: dict[str, object] | None = None,
+        return_type: object | None = None,
+    ) -> object:
+        del return_type
+        data = dict(api_kwargs or {})
+        self.api_requests.append((endpoint, data))
+        if self.fail_api_requests:
+            raise MarkdownFailureError
+        if endpoint != "sendRichMessage":
+            return True
+        reply_kwargs: dict[str, object] = {}
+        if "reply_markup" in data:
+            reply_kwargs["reply_markup"] = data["reply_markup"]
+        plain, entities = _render_rich(_rich_markdown(data))
+        if entities:
+            reply_kwargs["entities"] = entities
+        return await self.message.reply_text(plain, **reply_kwargs)
+
+
 class DummyMessage:
     def __init__(  # noqa: PLR0913
         self,
@@ -99,7 +151,7 @@ class DummyMessage:
         *,
         message_id: int = 1,
         chat_id: int = 100,
-        bot: DummyBot | None = None,
+        bot: DummyBot | MessageReplyBot | None = None,
         caption: str | None = None,
         photo: Sequence[object] | None = None,
         document: object | None = None,
@@ -109,7 +161,7 @@ class DummyMessage:
     ) -> None:
         self.message_id = message_id
         self.chat_id = chat_id
-        self._bot = bot if bot is not None else DummyBot()
+        self._bot = bot if bot is not None else MessageReplyBot(self)
         self.text = text
         self.caption = caption
         self.photo = list(photo) if photo is not None else []
@@ -125,7 +177,7 @@ class DummyMessage:
         self.photos: list[object] = []
         self.documents: list[object] = []
 
-    def get_bot(self) -> DummyBot:
+    def get_bot(self) -> DummyBot | MessageReplyBot:
         return self._bot
 
     async def reply_text(self, text: str, **kwargs: object) -> SimpleNamespace:
@@ -179,13 +231,40 @@ class DummyBot:
         return_type: object | None = None,
     ) -> object:
         del return_type
-        self.api_requests.append((endpoint, dict(api_kwargs or {})))
+        data = dict(api_kwargs or {})
+        self.api_requests.append((endpoint, data))
         if self.fail_api_requests:
             raise MarkdownFailureError
         if endpoint == "sendRichMessage":
+            plain, entities = _render_rich(_rich_markdown(data))
+            payload: dict[str, object] = {
+                "chat_id": data.get("chat_id"),
+                "text": plain,
+                "rich_message": data.get("rich_message"),
+            }
+            if entities:
+                payload["entities"] = entities
+            if "reply_markup" in data:
+                payload["reply_markup"] = data["reply_markup"]
+            if "reply_parameters" in data:
+                payload["reply_parameters"] = data["reply_parameters"]
+            self.sent_messages.append(payload)
             msg = SimpleNamespace(message_id=self._next_message_id)
             self._next_message_id += 1
             return msg
+        if endpoint == "editMessageText" and "rich_message" in data:
+            plain, entities = _render_rich(_rich_markdown(data))
+            payload = {
+                "chat_id": data.get("chat_id"),
+                "message_id": data.get("message_id"),
+                "text": plain,
+                "rich_message": data.get("rich_message"),
+            }
+            if entities:
+                payload["entities"] = entities
+            if "reply_markup" in data:
+                payload["reply_markup"] = data["reply_markup"]
+            self.edited_messages.append(payload)
         return True
 
     async def send_chat_action(self, chat_id: int, action: str) -> None:
@@ -228,6 +307,10 @@ class DummyBot:
 
 
 class FailingMarkdownBot(DummyBot):
+    def __init__(self) -> None:
+        super().__init__()
+        self.fail_api_requests = True
+
     async def send_message(self, **kwargs: object) -> SimpleNamespace:
         if "entities" in kwargs:
             raise MarkdownFailureError
@@ -237,12 +320,20 @@ class FailingMarkdownBot(DummyBot):
 class FailingEditBot(DummyBot):
     """Always raises on edit_message_text (used to test compact fallback)."""
 
+    def __init__(self) -> None:
+        super().__init__()
+        self.fail_api_requests = True
+
     async def edit_message_text(self, **kwargs: object) -> None:
         raise MarkdownFailureError
 
 
 class EntityFailingEditBot(DummyBot):
     """Raises on edit_message_text only when entities are supplied."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.fail_api_requests = True
 
     async def edit_message_text(self, **kwargs: object) -> None:
         if "entities" in kwargs:
@@ -261,6 +352,32 @@ class NotModifiedAwareBot(DummyBot):
     def __init__(self) -> None:
         super().__init__()
         self._message_state: dict[int, dict[str, object]] = {}
+
+    async def do_api_request(
+        self,
+        endpoint: str,
+        api_kwargs: dict[str, object] | None = None,
+        return_type: object | None = None,
+    ) -> object:
+        data = dict(api_kwargs or {})
+        if endpoint == "sendRichMessage":
+            result = await super().do_api_request(endpoint, data, return_type)
+            message_id = cast(int, getattr(result, "message_id", None))
+            self._message_state[message_id] = {
+                "rich_message": data.get("rich_message"),
+                "reply_markup": data.get("reply_markup"),
+            }
+            return result
+        if endpoint == "editMessageText" and "rich_message" in data:
+            message_id = cast(int, data.get("message_id"))
+            next_state = {
+                "rich_message": data.get("rich_message"),
+                "reply_markup": data.get("reply_markup"),
+            }
+            if self._message_state.get(message_id) == next_state:
+                raise NotModifiedError
+            self._message_state[message_id] = next_state
+        return await super().do_api_request(endpoint, data, return_type)
 
     async def send_message(self, **kwargs: object) -> SimpleNamespace:
         message = await super().send_message(**kwargs)

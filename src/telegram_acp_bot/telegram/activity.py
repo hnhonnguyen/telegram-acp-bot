@@ -320,23 +320,21 @@ class _VerboseActivityModeHandler(_ActivityModeHandler):
         message_id: int,
         text: str,
     ) -> bool:
-        preview = self._bridge._render_markdown_preview_chunk(text)
+        preview = self._bridge._render_rich_preview(text)
         if preview is None:
             return False
-        preview_text, preview_entities = preview
-        return await self._bridge._edit_rendered_chunk_in_chat(
+        return await self._bridge._edit_markdown_in_chat(
             bot=bot,
             chat_id=chat_id,
             message_id=message_id,
-            text=preview_text,
-            entities=preview_entities,
+            text=preview,
         )
 
     async def _send_in_progress_preview(self, *, bot: Bot, chat_id: int, text: str) -> Message | None:
-        preview = self._bridge._render_markdown_preview_chunk(text)
+        preview = self._bridge._render_rich_preview(text)
         if preview is None:
             return None
-        return await self._bridge._send_rendered_chunks_to_chat(bot=bot, chat_id=chat_id, chunks=[preview])
+        return await self._bridge._send_markdown_to_chat(bot=bot, chat_id=chat_id, text=preview)
 
     async def _apply_block_locked(self, *, chat_id: int, slot_key: str, block: AgentActivityBlock) -> None:
         app = self._bridge._app

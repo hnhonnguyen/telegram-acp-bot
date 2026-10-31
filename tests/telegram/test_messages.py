@@ -827,7 +827,7 @@ async def test_on_permission_request_sends_buttons():
     assert cast(str, payload["text"]).startswith("⚠️ Permission required")
     assert cast(str, payload["text"]).endswith("ls")
     assert "parse_mode" not in payload
-    assert "entities" in payload
+    assert "rich_message" in payload
     markup = payload["reply_markup"]
     assert markup is not None
 
@@ -874,7 +874,7 @@ async def test_on_permission_request_formats_multiline_run_as_code_block():
     payload = dummy_bot.sent_messages[0]
     assert cast(str, payload["text"]).endswith("git diff -- README.md \\\n  docs/index.md")
     assert "parse_mode" not in payload
-    assert "entities" in payload
+    assert "rich_message" in payload
 
 
 async def test_on_permission_request_markdown_fallback_uses_plain_text():
@@ -1900,14 +1900,7 @@ async def test_reply_with_no_message_object():
 TABLE_REPLY = "| Step | Task |\n|------|------|\n| 1 | Research |\n| 2 | Implement |"
 
 
-async def test_contains_markdown_table_ignores_fenced_code():
-    assert TelegramBridge._contains_markdown_table(TABLE_REPLY)
-    assert TelegramBridge._contains_markdown_table("Step | Task\n--- | ---\n1 | Research")
-    assert not TelegramBridge._contains_markdown_table("Step | Task without a separator")
-    assert not TelegramBridge._contains_markdown_table(f"```\n{TABLE_REPLY}\n```")
-
-
-async def test_reply_agent_sends_tables_as_rich_messages():
+async def test_reply_agent_uses_rich_message():
     update = make_update()
     assert update.message is not None
 
@@ -1918,7 +1911,111 @@ async def test_reply_agent_sends_tables_as_rich_messages():
     payload = bot.api_requests[0][1]
     assert payload["rich_message"] == {"markdown": TABLE_REPLY}
     assert payload["reply_parameters"] == {"message_id": 1, "allow_sending_without_reply": True}
-    assert update.message.replies == []
+    assert update.message.replies
+    assert "Research" in update.message.replies[0]
+
+
+async def test_split_rich_markdown_prefers_blank_line_boundaries():
+    limit = bridge_module.TELEGRAM_MAX_RICH_MESSAGE_LENGTH
+    first = "a" * (limit - 100) + "\n\n"
+    second = "b" * 200 + "\n"
+
+    chunks = TelegramBridge._split_rich_markdown(first + second)
+
+    assert chunks == [first, second]
+
+
+async def test_split_rich_markdown_reopens_fenced_code_blocks():
+    limit = bridge_module.TELEGRAM_MAX_RICH_MESSAGE_LENGTH
+    code = "```python\n" + ("print('x')\n" * (limit // 5)) + "```\n"
+
+    chunks = TelegramBridge._split_rich_markdown(code)
+
+    assert len(chunks) > 1
+    assert all(chunk.startswith("```python\n") for chunk in chunks)
+    assert all(chunk.endswith("```\n") for chunk in chunks)
+    assert all(len(chunk) <= limit for chunk in chunks)
+
+
+async def test_split_rich_markdown_hard_splits_a_long_line():
+    limit = bridge_module.TELEGRAM_MAX_RICH_MESSAGE_LENGTH
+    text = "a" * (limit + 20)
+
+    chunks = TelegramBridge._split_rich_markdown(text)
+
+    assert chunks == ["a" * limit, "a" * 20]
+
+
+async def test_split_rich_markdown_closes_fences_after_a_hard_split():
+    limit = bridge_module.TELEGRAM_MAX_RICH_MESSAGE_LENGTH
+    code = "```python\n" + "x" * (limit + 100) + "\n```\n"
+
+    chunks = TelegramBridge._split_rich_markdown(code)
+
+    assert len(chunks) > 1
+    assert all(chunk.endswith("\n```\n") for chunk in chunks)
+    assert all(len(chunk) <= limit for chunk in chunks)
+
+
+async def test_pack_markdown_lines_handles_long_lines():
+    assert TelegramBridge._pack_markdown_lines(["abc", "x" * 10], 5) == ["abc", "xxxxx", "xxxxx"]
+    assert TelegramBridge._pack_markdown_lines(["abc", "def"], 5) == ["abc", "def"]
+
+
+async def test_split_oversized_markdown_block_handles_tiny_budget():
+    block = "``````\ncode\n``````\n"
+
+    assert TelegramBridge._split_oversized_markdown_block(block, 5)
+
+
+async def test_reply_entity_fallback_keeps_reply_markup_on_first_chunk():
+    update = make_update()
+    assert update.message is not None
+    update.message.get_bot().fail_api_requests = True
+    keyboard = InlineKeyboardMarkup([])
+
+    await TelegramBridge._reply_markdown_message(update.message, text="hello", reply_markup=keyboard)
+
+    assert update.message.reply_kwargs[0]["reply_markup"] is keyboard
+
+
+async def test_reply_entity_fallback_on_convert_error_keeps_reply_markup(monkeypatch: pytest.MonkeyPatch):
+    update = make_update()
+    assert update.message is not None
+    update.message.get_bot().fail_api_requests = True
+
+    def boom(_: str):
+        raise RuntimeError
+
+    monkeypatch.setattr(bridge_module, "convert", boom)
+    keyboard = InlineKeyboardMarkup([])
+
+    await TelegramBridge._reply_markdown_message(update.message, text="hello", reply_markup=keyboard)
+
+    assert update.message.reply_kwargs[-1]["reply_markup"] is keyboard
+
+
+async def test_reply_markdown_message_ignores_empty_text():
+    update = make_update()
+    assert update.message is not None
+
+    assert await TelegramBridge._reply_markdown_message(update.message, text="  ") is None
+
+
+async def test_send_markdown_to_chat_ignores_empty_text():
+    bot = DummyBot()
+
+    assert await TelegramBridge._send_markdown_to_chat(bot=cast(Bot, bot), chat_id=42, text="  ") is None
+
+
+async def test_send_chat_message_reply_without_entities():
+    bot = DummyBot()
+    reply_to = 7
+
+    await TelegramBridge._send_chat_message(bot=cast(Bot, bot), chat_id=42, text="hello", reply_to_message_id=reply_to)
+
+    assert bot.sent_messages[-1]["reply_to_message_id"] == reply_to
+    assert "entities" not in bot.sent_messages[-1]
 
 
 async def test_reply_agent_falls_back_when_rich_send_fails():
@@ -1932,7 +2029,7 @@ async def test_reply_agent_falls_back_when_rich_send_fails():
     assert update.message.replies
 
 
-async def test_send_markdown_to_chat_uses_rich_message_for_tables():
+async def test_send_markdown_to_chat_uses_rich_message():
     bot = DummyBot()
     keyboard = InlineKeyboardMarkup([])
 
@@ -1956,7 +2053,7 @@ async def test_send_markdown_to_chat_uses_rich_message_for_tables():
             },
         )
     ]
-    assert bot.sent_messages == []
+    assert bot.sent_messages[0]["rich_message"] == {"markdown": TABLE_REPLY}
 
 
 async def test_send_markdown_to_chat_falls_back_when_rich_send_fails():
@@ -1969,7 +2066,7 @@ async def test_send_markdown_to_chat_falls_back_when_rich_send_fails():
     assert bot.sent_messages
 
 
-async def test_edit_markdown_in_chat_uses_rich_message_for_tables():
+async def test_edit_markdown_in_chat_uses_rich_message():
     bot = DummyBot()
     keyboard = InlineKeyboardMarkup([])
 
@@ -1993,7 +2090,7 @@ async def test_edit_markdown_in_chat_uses_rich_message_for_tables():
             },
         )
     ]
-    assert bot.edited_messages == []
+    assert bot.edited_messages[0]["rich_message"] == {"markdown": TABLE_REPLY}
 
 
 async def test_edit_markdown_in_chat_falls_back_to_entities_when_rich_edit_fails():
@@ -2012,7 +2109,7 @@ async def test_edit_markdown_in_chat_falls_back_to_entities_when_rich_edit_fails
     assert bot.edited_messages
 
 
-async def test_tables_over_the_rich_message_limit_use_entities():
+async def test_markdown_over_the_rich_message_limit_skips_rich():
     text = f"{TABLE_REPLY}\n" + "x" * 32768
 
     assert not TelegramBridge._can_use_rich_message(text)
@@ -2026,6 +2123,7 @@ async def test_reply_agent_with_no_message_object():
 async def test_reply_agent_uses_entities_split_flow(monkeypatch: pytest.MonkeyPatch):
     update = make_update()
     assert update.message is not None
+    update.message.get_bot().fail_api_requests = True
 
     entity = bot_module.MarkdownMessageEntity(type="bold", offset=0, length=5)
     monkeypatch.setattr(bridge_module, "convert", lambda text: (text, [entity]))
@@ -2048,6 +2146,7 @@ async def test_reply_agent_falls_back_to_plain_text_on_convert_error(
 ):
     update = make_update()
     assert update.message is not None
+    update.message.get_bot().fail_api_requests = True
 
     def boom(_: str):
         raise RuntimeError
@@ -2064,6 +2163,7 @@ async def test_reply_falls_back_to_plain_when_entity_send_fails():
     update = make_update()
     assert update.message is not None
     update.message.fail_entities = True
+    update.message.get_bot().fail_api_requests = True
 
     await TelegramBridge._reply(update, "*x*")
 
@@ -2077,6 +2177,7 @@ async def test_reply_agent_falls_back_to_plain_when_convert_fails(
 ):
     update = make_update()
     assert update.message is not None
+    update.message.get_bot().fail_api_requests = True
 
     def boom(_: str):
         raise RuntimeError
@@ -2121,6 +2222,7 @@ async def test_send_markdown_to_chat_without_entities_omits_entities_kwarg():
 
 async def test_send_markdown_to_chat_falls_back_to_plain_when_convert_fails(monkeypatch: pytest.MonkeyPatch):
     dummy_bot = DummyBot()
+    dummy_bot.fail_api_requests = True
 
     def boom(_: str):
         raise ValueError

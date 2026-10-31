@@ -165,6 +165,7 @@ async def test_compact_permission_request_replaces_status_message_when_edit_fail
 
     bridge = make_compact_bridge()
     bot = EditFailingBot()
+    bot.fail_api_requests = True
     bridge._app = cast(Application, SimpleNamespace(bot=bot))
     bridge._compact_status_msg_id[TEST_CHAT_ID] = COMPACT_STATUS_MSG_ID
 

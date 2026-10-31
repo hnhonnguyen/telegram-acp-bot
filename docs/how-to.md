@@ -519,8 +519,10 @@ neither ever naming the other.
 - `/cmds` shows the slash commands the agent advertised for the current session as tap-to-run buttons; see the how-to
   section above.
 - A question the agent asks over ACP (an elicitation) is offered as tap-to-answer buttons; see the how-to section above.
-- A reply containing a Markdown table is sent as a Bot API rich message, so Telegram renders a real table instead of a
-  monospace block. If the Bot API rejects the rich message, the bot falls back to aligned plain text.
+- Agent replies, activity updates, and interactive prompts are sent as Bot API rich messages, so headings, lists, code
+  blocks, and tables render natively. Long content is split into multiple rich messages. If the Bot API rejects a rich
+  message, the bot falls back to text plus message entities.
+- Plain status messages (compact progress and queued-prompt notices) stay plain text because they carry no Markdown.
 - A dead agent process is restarted and its session reloaded on the next message; see {ref}`how-to-agent-dies`.
 - Several agents can run in one process, each behind its own Telegram bot; see {ref}`how-to-two-agents`.
 

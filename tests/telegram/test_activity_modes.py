@@ -347,7 +347,7 @@ async def test_edit_markdown_in_chat_returns_true_for_text_with_entities():
 async def test_edit_markdown_in_chat_returns_false_on_multi_chunk():
 
     bot = DummyBot()
-    long_text = "word " * 1500
+    long_text = "word " * 7000
     result = await TelegramBridge._edit_markdown_in_chat(
         bot=cast(Bot, bot), chat_id=TEST_CHAT_ID, message_id=COMPACT_STATUS_MSG_ID, text=long_text
     )
@@ -369,7 +369,8 @@ async def test_edit_markdown_in_chat_entity_edit_fails_falls_back_to_plain():
 async def test_edit_markdown_in_chat_treats_not_modified_as_success():
 
     bot = NotModifiedAwareBot()
-    sent = await bot.send_message(chat_id=TEST_CHAT_ID, text="Hello")
+    sent = await TelegramBridge._send_markdown_to_chat(bot=cast(Bot, bot), chat_id=TEST_CHAT_ID, text="Hello")
+    assert sent is not None
     result = await TelegramBridge._edit_markdown_in_chat(
         bot=cast(Bot, bot), chat_id=TEST_CHAT_ID, message_id=sent.message_id, text="Hello"
     )
@@ -395,10 +396,32 @@ async def test_edit_markdown_in_chat_returns_false_when_plain_edit_fails():
     assert result is False
 
 
+async def test_edit_rendered_chunk_treats_not_modified_entity_edit_as_success():
+
+    class NotModifiedEntityEditBot(DummyBot):
+        async def edit_message_text(self, **kwargs: object) -> None:
+            if "entities" in kwargs:
+                raise NotModifiedError
+            await super().edit_message_text(**kwargs)
+
+    bot = NotModifiedEntityEditBot()
+    result = await TelegramBridge._edit_rendered_chunk_in_chat(
+        bot=cast(Bot, bot),
+        chat_id=TEST_CHAT_ID,
+        message_id=COMPACT_STATUS_MSG_ID,
+        text="Hello",
+        entities=[MessageEntity(type=MessageEntity.BOLD, offset=0, length=5)],
+    )
+
+    assert result is True
+    assert bot.edited_messages == []
+
+
 async def test_edit_markdown_in_chat_convert_error_falls_back_to_plain(mocker):
 
     mocker.patch("telegram_acp_bot.telegram.bridge.convert", side_effect=RuntimeError("bad"))
     bot = DummyBot()
+    bot.fail_api_requests = True
     result = await TelegramBridge._edit_markdown_in_chat(
         bot=cast(Bot, bot), chat_id=TEST_CHAT_ID, message_id=COMPACT_STATUS_MSG_ID, text="Hello"
     )
@@ -444,23 +467,24 @@ async def test_verbose_final_reply_replaces_streamed_reply_preview_when_markdown
     assert len(bot.edited_messages) == 1
     assert cast(int, bot.edited_messages[0]["message_id"]) == 1
     assert cast(str, bot.edited_messages[0]["text"]) == "bold"
-    assert bot.edited_messages[0]["entities"]
+    assert bot.edited_messages[0]["rich_message"] == {"markdown": "**bold**"}
     assert update.message is not None
     assert update.message.replies == []
 
 
 async def test_verbose_final_reply_keeps_markdown_when_final_matches_streamed_preview():
 
+    reply = (
+        'Sí, pero te conviene separar `"extraer emails plausibles"` de '
+        '`"validar RFC completo"`.\n\n'
+        "```python\n"
+        "print('ok')\n"
+        "```"
+    )
+
     class StableStreamingMarkdownReplyService(LiveActivityService):
         async def prompt(self, *, chat_id: int, text: str, images=(), files=()):
             del text, images, files
-            reply = (
-                'Sí, pero te conviene separar `"extraer emails plausibles"` de '
-                '`"validar RFC completo"`.\n\n'
-                "```python\n"
-                "print('ok')\n"
-                "```"
-            )
             assert self._activity_handler is not None
             await self._activity_handler(
                 chat_id,
@@ -483,8 +507,8 @@ async def test_verbose_final_reply_keeps_markdown_when_final_matches_streamed_pr
     assert len(bot.sent_messages) == 1
     assert bot.edited_messages == []
     payload = bot.sent_messages[0]
-    assert "entities" in payload
-    assert payload["entities"]
+    assert "rich_message" in payload
+    assert payload["rich_message"] == {"markdown": reply}
     assert update.message is not None
     assert update.message.replies == []
 
@@ -520,12 +544,60 @@ async def test_verbose_finalize_reply_handles_empty_text_and_empty_chunks(mocker
         ),
     )
     mocker.patch.object(TelegramBridge, "_render_markdown_chunks", return_value=[])
+    long_text = "x" * (bridge_module.TELEGRAM_MAX_RICH_MESSAGE_LENGTH + 1)
     assert (
-        await handler.finalize_reply(
-            chat_id=TEST_CHAT_ID, update=cast(Update, make_update()), text="still empty chunks"
-        )
+        await handler.finalize_reply(chat_id=TEST_CHAT_ID, update=cast(Update, make_update()), text=long_text)
         == SECOND_REPLY_MESSAGE_ID
     )
+
+
+async def test_verbose_finalize_reply_uses_entity_chunks_for_oversized_text():
+    bridge = make_verbose_bridge()
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+    handler = cast(bot_module._VerboseActivityModeHandler, bridge._activity_handler(chat_id=TEST_CHAT_ID))
+    handler._store_message(
+        chat_id=TEST_CHAT_ID,
+        slot_key="activity:reply",
+        message=bot_module._VerboseActivityMessage(
+            activity_id="reply",
+            kind="reply",
+            title="",
+            message_id=1,
+            source_text="preview",
+        ),
+    )
+    long_text = "word " * 7000
+
+    assert await handler.finalize_reply(chat_id=TEST_CHAT_ID, update=cast(Update, make_update()), text=long_text) == 1
+
+    assert bot.edited_messages
+    assert bot.sent_messages
+
+
+async def test_verbose_finalize_oversized_text_deletes_preview_when_edit_fails():
+    bridge = make_verbose_bridge()
+    bot = FailingEditBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+    handler = cast(bot_module._VerboseActivityModeHandler, bridge._activity_handler(chat_id=TEST_CHAT_ID))
+    handler._store_message(
+        chat_id=TEST_CHAT_ID,
+        slot_key="activity:reply",
+        message=bot_module._VerboseActivityMessage(
+            activity_id="reply",
+            kind="reply",
+            title="",
+            message_id=1,
+            source_text="preview",
+        ),
+    )
+    long_text = "word " * 7000
+
+    assert (
+        await handler.finalize_reply(chat_id=TEST_CHAT_ID, update=cast(Update, make_update()), text=long_text) is None
+    )
+
+    assert (TEST_CHAT_ID, 1) in bot.deleted_message_ids
 
 
 async def test_verbose_finalize_reply_edits_rich_table_in_place():
@@ -681,7 +753,7 @@ async def test_verbose_in_progress_preview_helpers_handle_missing_preview(mocker
     handler = cast(bot_module._VerboseActivityModeHandler, bridge._activity_handler(chat_id=TEST_CHAT_ID))
     bot = DummyBot()
 
-    mocker.patch.object(TelegramBridge, "_render_markdown_preview_chunk", return_value=None)
+    mocker.patch.object(TelegramBridge, "_render_rich_preview", return_value=None)
 
     assert (
         await handler._edit_in_progress_preview(
@@ -695,23 +767,15 @@ async def test_verbose_in_progress_preview_helpers_handle_missing_preview(mocker
     assert await handler._send_in_progress_preview(bot=cast(Bot, bot), chat_id=TEST_CHAT_ID, text="preview") is None
 
 
-async def test_render_markdown_preview_chunk_handles_empty_and_fallback(mocker):
-    short_text = "plain preview"
-    mocker.patch.object(TelegramBridge, "_render_markdown_chunks", side_effect=RuntimeError("boom"))
-    short_preview = TelegramBridge._render_markdown_preview_chunk(short_text)
-
-    assert short_preview == (short_text, None)
+async def test_render_rich_preview_handles_empty_and_long_text():
+    assert TelegramBridge._render_rich_preview("   ") is None
 
     long_text = "a" * (bot_module.TELEGRAM_MAX_UTF16_MESSAGE_LENGTH + 50)
-    long_preview = TelegramBridge._render_markdown_preview_chunk(long_text)
+    long_preview = TelegramBridge._render_rich_preview(long_text)
 
     assert long_preview is not None
-    assert long_preview[1] is None
-    assert long_preview[0].endswith("...")
-    assert bot_module.utf16_len(long_preview[0]) <= bot_module.TELEGRAM_MAX_UTF16_MESSAGE_LENGTH
-
-    mocker.patch.object(TelegramBridge, "_render_markdown_chunks", return_value=[])
-    assert TelegramBridge._render_markdown_preview_chunk("ignored") is None
+    assert long_preview.endswith("...")
+    assert bot_module.utf16_len(long_preview) <= bot_module.TELEGRAM_MAX_UTF16_MESSAGE_LENGTH
 
 
 async def test_verbose_completed_event_without_active_message_sends_and_clears():
