@@ -8,9 +8,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from telegram_acp_bot.mcp import server as mcp_channel
-from telegram_acp_bot.mcp.tools import downloads as downloads_module
-from telegram_acp_bot.mcp.tools import mtproto as mtproto_module
+from acp_chat_bot.mcp import server as mcp_channel
+from acp_chat_bot.mcp.tools import downloads as downloads_module
+from acp_chat_bot.mcp.tools import mtproto as mtproto_module
 from tests.mcp.support import STATE_FILE_ENV, TOKEN_ENV, save_session_chat_map
 
 TEST_API_ID = 12345
@@ -41,7 +41,7 @@ def make_client(mocker, *, file: object | None):
 
 def make_patch(mocker, client):
     factory = mocker.MagicMock(return_value=client)
-    mocker.patch("telegram_acp_bot.mcp.tools.mtproto.TelegramClient", factory)
+    mocker.patch("acp_chat_bot.mcp.tools.mtproto.TelegramClient", factory)
     return factory
 
 
@@ -159,7 +159,7 @@ async def test_download_file_reports_a_login_failure_without_caching(mocker, cha
     factory = mocker.MagicMock()
     factory.return_value.start = mocker.AsyncMock(side_effect=OSError("network down"))
     factory.return_value.disconnect = mocker.AsyncMock()
-    mocker.patch("telegram_acp_bot.mcp.tools.mtproto.TelegramClient", factory)
+    mocker.patch("acp_chat_bot.mcp.tools.mtproto.TelegramClient", factory)
 
     result = await mcp_channel.telegram_download_file(message_id=TEST_MESSAGE_ID)
 

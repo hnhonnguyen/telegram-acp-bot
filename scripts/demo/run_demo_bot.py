@@ -11,11 +11,11 @@ from typing import cast
 
 from dotenv import load_dotenv
 
-from telegram_acp_bot.acp.models import PermissionEventOutput, PermissionMode
-from telegram_acp_bot.instance import BotInstanceSpec, build_bot_instance
-from telegram_acp_bot.mcp.state import MAX_GROUP_HISTORY_PER_CHAT, default_state_file
-from telegram_acp_bot.runner import run_bot
-from telegram_acp_bot.scheduled_tasks import default_scheduled_tasks_db_path
+from acp_chat_bot.acp.models import PermissionEventOutput, PermissionMode
+from acp_chat_bot.instance import BotInstanceSpec, build_bot_instance
+from acp_chat_bot.mcp.state import MAX_GROUP_HISTORY_PER_CHAT, default_state_file
+from acp_chat_bot.runner import run_bot
+from acp_chat_bot.scheduled_tasks import default_scheduled_tasks_db_path
 
 TOKEN_REQUIRED_MESSAGE = "--telegram-token (or TELEGRAM_BOT_TOKEN) is required"
 ALLOWLIST_REQUIRED_MESSAGE = "Provide at least one allowlist entry via --allowed-user-id or --allowed-username"

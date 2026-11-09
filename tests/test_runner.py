@@ -12,9 +12,9 @@ from typing import cast
 import pytest
 from telegram.ext import Application
 
-from telegram_acp_bot.instance import BotInstance, build_bot_instance
-from telegram_acp_bot.runner import run_bot, run_instances
-from telegram_acp_bot.telegram.constants import RESTART_EXIT_CODE
+from acp_chat_bot.channels.telegram.constants import RESTART_EXIT_CODE
+from acp_chat_bot.instance import BotInstance, build_bot_instance
+from acp_chat_bot.runner import run_bot, run_instances
 from tests.test_agent_config import base_spec
 
 TEST_APP_TOKEN = "111:qoder"
@@ -33,6 +33,36 @@ class _FakeApp:
 class _FakeBridge:
     def __init__(self, *, restart_requested: bool = False) -> None:
         self.restart_requested = restart_requested
+
+
+class _FakeRuntime:
+    def __init__(self, *, start_error: Exception | None = None, stop_error: Exception | None = None) -> None:
+        self.start_error = start_error
+        self.stop_error = stop_error
+        self.started = False
+        self.stopped = False
+
+    async def start(self) -> None:
+        if self.start_error is not None:
+            raise self.start_error
+        self.started = True
+
+    async def stop(self) -> None:
+        self.stopped = True
+        if self.stop_error is not None:
+            raise self.stop_error
+
+
+def runtime_instance(name: str, runtime: _FakeRuntime) -> BotInstance:
+    """An instance whose channel is driven by a runtime instead of a Telegram application."""
+    return cast(
+        BotInstance,
+        SimpleNamespace(
+            spec=SimpleNamespace(name=name, restart_command_parts=None),
+            bridge=_FakeBridge(),
+            runtime=runtime,
+        ),
+    )
 
 
 def fake_instance(name: str, *, restart: bool = False, restart_command: tuple[str, ...] | None = None) -> BotInstance:
@@ -85,8 +115,8 @@ def patch_lifecycle(mocker, start=None, stop=None):
         else:
             stops.append(app.name)
 
-    mocker.patch("telegram_acp_bot.runner.start_application", new=mocker.AsyncMock(side_effect=record_start))
-    mocker.patch("telegram_acp_bot.runner.stop_application", new=mocker.AsyncMock(side_effect=record_stop))
+    mocker.patch("acp_chat_bot.runner.start_application", new=mocker.AsyncMock(side_effect=record_start))
+    mocker.patch("acp_chat_bot.runner.stop_application", new=mocker.AsyncMock(side_effect=record_stop))
     return started, stops
 
 
@@ -208,7 +238,7 @@ async def test_instances_survive_a_loop_without_signal_support(mocker):
 
 def test_run_bot_returns_a_normal_exit_code(mocker):
     mock_run_instances = mocker.patch(
-        "telegram_acp_bot.runner.run_instances", new_callable=mocker.AsyncMock, return_value=0
+        "acp_chat_bot.runner.run_instances", new_callable=mocker.AsyncMock, return_value=0
     )
 
     assert run_bot([fake_instance("qoder")], asyncio.Event()) == 0
@@ -222,8 +252,8 @@ def test_run_bot_reexecs_the_restart_command_of_the_requesting_agent(mocker):
         del instances, stop_event
         return RESTART_EXIT_CODE
 
-    mocker.patch("telegram_acp_bot.runner.run_instances", new_callable=mocker.AsyncMock, side_effect=request_restart)
-    execvp = mocker.patch("telegram_acp_bot.runner.os.execvp", side_effect=OSError("execvp failed"))
+    mocker.patch("acp_chat_bot.runner.run_instances", new_callable=mocker.AsyncMock, side_effect=request_restart)
+    execvp = mocker.patch("acp_chat_bot.runner.os.execvp", side_effect=OSError("execvp failed"))
 
     assert run_bot(instances, asyncio.Event()) == 1
     execvp.assert_called_once_with("uv", list(RESTART_COMMAND))
@@ -236,11 +266,11 @@ def test_run_bot_reexecs_the_current_process_without_a_restart_command(mocker):
         del instances, stop_event
         return RESTART_EXIT_CODE
 
-    mocker.patch("telegram_acp_bot.runner.run_instances", new_callable=mocker.AsyncMock, side_effect=request_restart)
-    execvp = mocker.patch("telegram_acp_bot.runner.os.execvp")
-    execv = mocker.patch("telegram_acp_bot.runner.os.execv", side_effect=OSError("exec failed"))
-    mocker.patch("telegram_acp_bot.runner.sys.argv", ["telegram-acp-bot", "--agent", "qoder=agent"])
-    mocker.patch("telegram_acp_bot.runner.sys.executable", "/usr/bin/python3")
+    mocker.patch("acp_chat_bot.runner.run_instances", new_callable=mocker.AsyncMock, side_effect=request_restart)
+    execvp = mocker.patch("acp_chat_bot.runner.os.execvp")
+    execv = mocker.patch("acp_chat_bot.runner.os.execv", side_effect=OSError("exec failed"))
+    mocker.patch("acp_chat_bot.runner.sys.argv", ["telegram-acp-bot", "--agent", "qoder=agent"])
+    mocker.patch("acp_chat_bot.runner.sys.executable", "/usr/bin/python3")
 
     assert run_bot(instances, asyncio.Event()) == 1
     execvp.assert_not_called()
@@ -248,3 +278,37 @@ def test_run_bot_reexecs_the_current_process_without_a_restart_command(mocker):
         "/usr/bin/python3",
         ["/usr/bin/python3", "telegram-acp-bot", "--agent", "qoder=agent"],
     )
+
+
+@pytest.mark.asyncio
+async def test_a_channel_runtime_is_started_and_stopped(mocker):
+    runtime = _FakeRuntime()
+    patch_lifecycle(mocker)
+    stop_event = asyncio.Event()
+    stop_event.set()
+
+    assert await run_instances([runtime_instance("dt", runtime)], stop_event) == 0
+    assert runtime.started is True
+    assert runtime.stopped is True
+
+
+@pytest.mark.asyncio
+async def test_a_failing_runtime_start_stops_the_process(mocker):
+    runtime = _FakeRuntime(start_error=RuntimeError(AGENT_START_ERROR))
+    patch_lifecycle(mocker)
+    stop_event = asyncio.Event()
+
+    assert await run_instances([runtime_instance("dt", runtime)], stop_event) == 1
+    assert stop_event.is_set() is True
+    assert runtime.stopped is False
+
+
+@pytest.mark.asyncio
+async def test_a_failing_runtime_shutdown_is_reported(mocker):
+    runtime = _FakeRuntime(stop_error=RuntimeError(SHUTDOWN_ERROR))
+    patch_lifecycle(mocker)
+    stop_event = asyncio.Event()
+    stop_event.set()
+
+    assert await run_instances([runtime_instance("dt", runtime)], stop_event) == 1
+    assert runtime.stopped is True

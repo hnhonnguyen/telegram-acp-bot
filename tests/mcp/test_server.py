@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from telegram_acp_bot.channel_policy import CHANNEL_POLICY_REMINDER
-from telegram_acp_bot.mcp.tools.scheduling import SCHEDULE_TASK_DESCRIPTION
+from acp_chat_bot.channel_policy import CHANNEL_POLICY_REMINDER
+from acp_chat_bot.mcp.tools.scheduling import SCHEDULE_TASK_DESCRIPTION
 from tests.mcp.support import mcp_channel
 
 

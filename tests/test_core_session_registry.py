@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from telegram_acp_bot.core.session_registry import SessionRegistry
+from acp_chat_bot.core.session_registry import SessionRegistry
 
 
 def test_registry_create_get_clear():
@@ -22,3 +22,13 @@ def test_registry_replace_existing_session():
     assert first.session_id != second.session_id
     assert registry.get(20) == second
     assert second.workspace == Path("/b")
+
+
+def test_registry_accepts_opaque_string_chat_ids():
+    registry = SessionRegistry()
+
+    session = registry.create_or_replace(chat_id="cid-dingtalk", workspace=Path("/tmp"))
+    assert registry.get("cid-dingtalk") == session
+
+    registry.clear("cid-dingtalk")
+    assert registry.get("cid-dingtalk") is None

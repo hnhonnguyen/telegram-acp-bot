@@ -1,0 +1,236 @@
+from __future__ import annotations
+
+from collections.abc import Awaitable, Callable, Mapping
+from pathlib import Path
+
+from acp_chat_bot.acp.models import (
+    AgentActivityBlock,
+    AgentReply,
+    ElicitationRequest,
+    PermissionDecisionAction,
+    PermissionMode,
+    PermissionPolicy,
+    PermissionRequest,
+    PromptFile,
+    PromptImage,
+    ResumableSession,
+)
+from acp_chat_bot.core.ids import ChatId, MessageId, UserId
+from acp_chat_bot.core.session_registry import SessionRegistry
+
+
+class EchoAgentService:
+    """Minimal async service used as ACP placeholder for the first MVP."""
+
+    def __init__(self, registry: SessionRegistry) -> None:
+        self._registry = registry
+        self._session_permission_mode: dict[ChatId, PermissionMode] = {}
+        self._next_prompt_auto_approve: dict[ChatId, bool] = {}
+        self._pending_media: dict[ChatId, list[dict[str, object]]] = {}
+        self._group_history: dict[ChatId, list[dict[str, object]]] = {}
+        self._permission_prompt_handler: Callable[[PermissionRequest], Awaitable[None]] | None = None
+        self._activity_event_handler: Callable[[int, AgentActivityBlock], Awaitable[None]] | None = None
+
+    async def new_session(self, *, chat_id: ChatId, workspace: Path) -> str:
+        workspace = self._prepare_workspace(workspace)
+        session = self._registry.create_or_replace(chat_id=chat_id, workspace=workspace)
+        self._session_permission_mode[chat_id] = "ask"
+        self._next_prompt_auto_approve[chat_id] = False
+        return session.session_id
+
+    async def load_session(self, *, chat_id: ChatId, session_id: str, workspace: Path) -> str:
+        del session_id
+        return await self.new_session(chat_id=chat_id, workspace=workspace)
+
+    async def list_resumable_sessions(
+        self,
+        *,
+        chat_id: ChatId,
+        workspace: Path | None = None,
+    ) -> tuple[ResumableSession, ...] | None:
+        session = self._registry.get(chat_id)
+        if session is None:
+            return ()
+        normalized_workspace = self._normalize_workspace(workspace)
+        if normalized_workspace is not None and session.workspace != normalized_workspace:
+            return ()
+        return (
+            ResumableSession(
+                session_id=session.session_id,
+                workspace=session.workspace,
+                title="Echo session",
+                updated_at="",
+            ),
+        )
+
+    async def prompt(
+        self,
+        *,
+        chat_id: ChatId,
+        text: str,
+        images: tuple[PromptImage, ...] = (),
+        files: tuple[PromptFile, ...] = (),
+    ) -> AgentReply | None:
+        session = self._registry.get(chat_id)
+        if session is None:
+            return None
+
+        media_hint = f" [images={len(images)} files={len(files)}]" if images or files else ""
+        short_id = session.session_id.split("-", maxsplit=1)[0]
+        return AgentReply(text=f"[{short_id}] {text}{media_hint}".strip())
+
+    def get_workspace(self, *, chat_id: ChatId) -> Path | None:
+        session = self._registry.get(chat_id)
+        return None if session is None else session.workspace
+
+    def get_active_session_context(self, *, chat_id: ChatId) -> tuple[str, Path] | None:
+        session = self._registry.get(chat_id)
+        if session is None:
+            return None
+        return session.session_id, session.workspace
+
+    def supports_session_loading(self, *, chat_id: ChatId) -> bool | None:
+        del chat_id
+        return True
+
+    async def cancel(self, *, chat_id: ChatId) -> bool:
+        return self._registry.get(chat_id) is not None
+
+    async def stop(self, *, chat_id: ChatId) -> bool:
+        if self._registry.get(chat_id) is None:
+            return False
+        self._registry.clear(chat_id)
+        self._session_permission_mode.pop(chat_id, None)
+        self._next_prompt_auto_approve.pop(chat_id, None)
+        return True
+
+    async def clear(self, *, chat_id: ChatId) -> bool:
+        return await self.stop(chat_id=chat_id)
+
+    async def record_pending_media(
+        self,
+        *,
+        chat_id: ChatId,
+        message_id: MessageId,
+        file_id: str,
+        mime_type: str | None,
+    ) -> None:
+        ref: dict[str, object] = {
+            "file_id": file_id,
+            "message_id": message_id,
+            "mime_type": mime_type,
+            "queued_at": "echo",
+        }
+        self._pending_media.setdefault(chat_id, []).append(ref)
+
+    async def take_pending_media(self, *, chat_id: ChatId) -> tuple[dict[str, object], ...]:
+        return tuple(self._pending_media.pop(chat_id, []))
+
+    async def record_group_message(  # noqa: PLR0913
+        self,
+        *,
+        chat_id: ChatId,
+        message_id: MessageId,
+        sender_id: UserId | None,
+        sender_name: str | None,
+        text: str,
+        max_entries: int,
+    ) -> None:
+        if max_entries <= 0:
+            return
+        entries = self._group_history.setdefault(chat_id, [])
+        entry: dict[str, object] = {
+            "message_id": message_id,
+            "sender_id": sender_id,
+            "sender_name": sender_name,
+            "text": text,
+            "sent_at": "echo",
+        }
+        for index, stored in enumerate(entries):
+            if stored["message_id"] == message_id:
+                entries[index] = entry
+                break
+        else:
+            entries.append(entry)
+        self._group_history[chat_id] = entries[-max_entries:]
+
+    async def read_group_history(self, *, chat_id: ChatId) -> tuple[dict[str, object], ...]:
+        return tuple(self._group_history.get(chat_id, []))
+
+    def get_permission_policy(self, *, chat_id: ChatId) -> PermissionPolicy | None:
+        if self._registry.get(chat_id) is None:
+            return None
+        return PermissionPolicy(
+            session_mode=self._session_permission_mode.get(chat_id, "deny"),
+            next_prompt_auto_approve=self._next_prompt_auto_approve.get(chat_id, False),
+        )
+
+    async def set_session_permission_mode(self, *, chat_id: ChatId, mode: PermissionMode) -> bool:
+        if self._registry.get(chat_id) is None:
+            return False
+        self._session_permission_mode[chat_id] = mode
+        return True
+
+    async def set_next_prompt_auto_approve(self, *, chat_id: ChatId, enabled: bool) -> bool:
+        if self._registry.get(chat_id) is None:
+            return False
+        self._next_prompt_auto_approve[chat_id] = enabled
+        return True
+
+    def set_permission_request_handler(
+        self,
+        handler: Callable[[PermissionRequest], Awaitable[None]] | None,
+    ) -> None:
+        self._permission_prompt_handler = handler
+
+    def set_activity_event_handler(
+        self,
+        handler: Callable[[int, AgentActivityBlock], Awaitable[None]] | None,
+    ) -> None:
+        self._activity_event_handler = handler
+
+    def set_elicitation_request_handler(
+        self,
+        handler: Callable[[ElicitationRequest], Awaitable[None]] | None,
+    ) -> None:
+        del handler
+
+    def set_elicitation_expiry_handler(
+        self,
+        handler: Callable[[int, str], Awaitable[None]] | None,
+    ) -> None:
+        del handler
+
+    async def respond_elicitation_request(
+        self,
+        *,
+        chat_id: ChatId,
+        request_id: str,
+        answers: Mapping[str, tuple[str, ...]] | None,
+    ) -> bool:
+        del chat_id, request_id, answers
+        return False
+
+    async def respond_permission_request(
+        self,
+        *,
+        chat_id: ChatId,
+        request_id: str,
+        action: PermissionDecisionAction,
+    ) -> bool:
+        del chat_id, request_id, action
+        return False
+
+    @staticmethod
+    def _prepare_workspace(workspace: Path) -> Path:
+        resolved = workspace.expanduser()
+        if resolved.exists() and not resolved.is_dir():
+            raise ValueError(resolved)
+        resolved.mkdir(parents=True, exist_ok=True)
+        return resolved
+
+    @staticmethod
+    def _normalize_workspace(workspace: Path | None) -> Path | None:
+        if workspace is None:
+            return None
+        return workspace.expanduser().resolve()

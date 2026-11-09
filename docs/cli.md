@@ -1,8 +1,9 @@
 # CLI Reference
 
-The bot entrypoint is `telegram-acp-bot`.
+The bot entrypoint is `acp-chat-bot`. The old `telegram-acp-bot` command forwards to it and emits a
+`DeprecationWarning` during the rename window.
 
-```{richterm} env PYTHONPATH=../src uv run -m telegram_acp_bot --help
+```{richterm} env PYTHONPATH=../src uv run -m acp_chat_bot --help
 :hide-command: true
 ```
 
@@ -13,9 +14,33 @@ The bot entrypoint is `telegram-acp-bot`.
   Default: the first file found in a standard location. A pinned path that cannot be read stops
   the run instead of falling back to discovery; see {ref}`config-file`.
 
+- `--channel {telegram,dingtalk}`
+  Default: `channel` in the config file, then `telegram`.
+  Chooses the chat channel for this agent. One agent belongs to exactly one channel.
+
 - `--telegram-token`
   Default: `telegram.bot_token` in the config file.
-  Required if that key is not set.
+  Required when the channel is `telegram`.
+
+- `--dingtalk-client-id`
+  Default: `dingtalk.client_id` in the config file.
+  Required when the channel is `dingtalk`.
+
+- `--dingtalk-client-secret`
+  Default: `dingtalk.client_secret` in the config file.
+  Required when the channel is `dingtalk`.
+
+- `--dingtalk-robot-code`
+  Default: `dingtalk.robot_code` in the config file, then the client ID.
+  Robot code used for proactive DingTalk sends.
+
+- `--allowed-staff-id`
+  Repeatable allowlist of DingTalk staff IDs.
+  At least one staff ID or nickname is required on DingTalk.
+
+- `--allowed-dingtalk-nickname`
+  Repeatable allowlist of DingTalk sender nicknames, matched case-insensitively.
+  Prefer staff IDs; at least one staff ID or nickname is required on DingTalk.
 
 - `--agent-command`
   Default: `acp.agent_command` in the config file.
@@ -27,12 +52,12 @@ The bot entrypoint is `telegram-acp-bot`.
 
 - `--allowed-user-id`
   Repeatable allowlist of Telegram user IDs.
-  At least one allowlist entry is required across IDs/usernames.
+  At least one allowlist entry is required across IDs/usernames on Telegram.
 
 - `--allowed-username`
   Repeatable allowlist of Telegram usernames.
   `@` prefix is optional; values are normalized to lowercase.
-  At least one allowlist entry is required across IDs/usernames.
+  At least one allowlist entry is required across IDs/usernames on Telegram.
 
 - `--agent NAME=COMMAND`
   Repeatable. Declares one agent of a multi-agent run, or overrides the ACP command line of an
@@ -45,23 +70,26 @@ The bot entrypoint is `telegram-acp-bot`.
   The config file offers the same choice as a top-level `"only"` list, which this flag replaces.
 
 - `--group-require-mention`
-  Default: `telegram.group_require_mention` in the config file.
+  Default: `telegram.group_require_mention` (Telegram) or `dingtalk.group_require_mention`
+  (DingTalk, `true`).
   Flag: when set, group messages are answered only if they `@mention` the bot or reply to
-  one of its messages. Private chats are unaffected.
+  one of its messages. Private chats are unaffected. DingTalk only delivers group messages that
+  mention the bot, so the default is already `true` there.
 
 - `--group-media-queue`
-  Default: `telegram.group_media_queue` in the config file.
+  Telegram-only. Default: `telegram.group_media_queue` in the config file.
   Flag: when set, media in group messages that the mention gate ignores is kept as a
   `file_id` reference and announced to the agent on its next answered prompt, where
   `telegram_fetch_attachment` can download it on demand. Needs `--group-require-mention`.
 
 - `--group-history-size`
-  Default: `telegram.group_history_size` in the config file, then `200`.
-  Number of recent group messages the bot keeps per chat for `telegram_list_messages`.
+  Default: `telegram.group_history_size` or `dingtalk.group_history_size` in the config file,
+  then `200`.
+  Number of recent group messages the bot keeps per chat for the channel history tool.
   Set it to `0` to stop recording group chat altogether. See {ref}`mcp-feature-history`.
 
 - `--status-reactions`
-  Default: `telegram.status_reactions` in the config file.
+  Telegram-only. Default: `telegram.status_reactions` in the config file.
   Allowed values: `off`, `minimal`.
   In `minimal`, the bot puts its own emoji reaction on the message that carried the prompt and
   replaces it as the cycle moves: 👀 when the chat is already busy, 🤔 while the agent works,
@@ -120,10 +148,16 @@ The bot entrypoint is `telegram-acp-bot`.
   - It requires an active session and reports session context (`session_id`, `workspace`) in the response.
   - `/restart N [workspace]` selects and loads a resumable session in-process (no process relaunch) and replies with a resume acknowledgment instead of a relaunch message.
 - Access control behavior:
-  - Configure at least one allowlist entry via `--allowed-user-id`, `--allowed-username`,
-    `telegram.allowed_user_ids`, or `telegram.allowed_usernames`.
+  - Telegram: configure at least one allowlist entry via `--allowed-user-id`,
+    `--allowed-username`, `telegram.allowed_user_ids`, or `telegram.allowed_usernames`.
+  - DingTalk: configure at least one `--allowed-staff-id`, `--allowed-dingtalk-nickname`,
+    `dingtalk.allowed_staff_ids`, or `dingtalk.allowed_nicknames`. The bot refuses to start with
+    no allowlist.
 - MCP behavior:
-  - `telegram-acp-bot` always advertises an internal MCP stdio server (`telegram-channel`) to the ACP agent.
+  - Telegram agents always get the internal MCP stdio server `telegram-channel`.
+  - DingTalk agents get `dingtalk-channel` instead, with scheduling and attachment tools but no
+    Telegram-only tools.
+- `register-commands` only applies to Telegram bots; DingTalk agents are skipped.
 - Multi-agent behavior (see {ref}`config-agents`):
   - `/restart` relaunches the process, so every agent in the fleet restarts, not only the bot that was asked.
   - One agent failing to start stops all of them and exits non-zero, leaving the whole fleet to the service manager.
@@ -210,7 +244,7 @@ telegram-acp-bot --config ./telegram-acp-bot.json register-commands --bot qoder
 ### Notes
 
 - Command definitions are sourced from the codebase constant
-  `telegram_acp_bot.telegram.bot.BOT_COMMANDS`.  Running `register-commands` is idempotent —
+  `acp_chat_bot.channels.telegram.bot.BOT_COMMANDS`.  Running `register-commands` is idempotent —
   it is safe to call multiple times.
 - Exit code `0` on success; `1` on Telegram API error; `2` on a missing token or an unknown `--bot`.
 - A fleet is registered bot by bot: one refused bot returns `1` after the others were still

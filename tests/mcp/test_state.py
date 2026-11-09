@@ -66,6 +66,13 @@ def test_load_session_chat_map_handles_non_dict_sessions(tmp_path: Path):
     assert mcp_channel.load_session_chat_map(state_file) == {}
 
 
+def test_session_chat_map_keeps_opaque_string_chat_ids(tmp_path: Path):
+    state_file = tmp_path / "state.json"
+    save_session_chat_map(state_file, {"session-dt": "cid-dingtalk-group"})
+
+    assert mcp_channel.load_session_chat_map(state_file) == {"session-dt": "cid-dingtalk-group"}
+
+
 def test_load_last_session_id_handles_invalid_json(tmp_path: Path):
     state_file = tmp_path / "state.json"
     state_file.write_text("{invalid", encoding="utf-8")
@@ -395,3 +402,87 @@ def test_configured_state_file_keeps_queued_media_for_a_new_process(tmp_path: Pa
 
     assert reopened == configured
     assert list(load_pending_media(reopened)) == [str(TEST_MEDIA_CHAT_ID)]
+
+
+DT_CHAT_ID = "cid-1"
+
+
+def test_conversation_target_round_trips(tmp_path: Path):
+    state_file = tmp_path / "state.json"
+
+    channel_state_module.save_conversation_target(
+        state_file,
+        chat_id=DT_CHAT_ID,
+        chat_type="group",
+        user_id="staff-1",
+        title="Team",
+    )
+
+    assert channel_state_module.load_conversation_target(state_file, DT_CHAT_ID) == {
+        "chat_type": "group",
+        "user_id": "staff-1",
+        "title": "Team",
+    }
+
+
+def test_conversation_target_is_replaced_on_update(tmp_path: Path):
+    state_file = tmp_path / "state.json"
+    channel_state_module.save_conversation_target(
+        state_file, chat_id=DT_CHAT_ID, chat_type="private", user_id="staff-1"
+    )
+
+    channel_state_module.save_conversation_target(
+        state_file, chat_id=DT_CHAT_ID, chat_type="group", user_id="staff-2", title="Team"
+    )
+
+    assert channel_state_module.load_conversation_target(state_file, DT_CHAT_ID) == {
+        "chat_type": "group",
+        "user_id": "staff-2",
+        "title": "Team",
+    }
+
+
+def test_conversation_targets_are_capped(tmp_path: Path):
+    state_file = tmp_path / "state.json"
+    for index in range(channel_state_module.MAX_CONVERSATION_TARGETS + 1):
+        channel_state_module.save_conversation_target(
+            state_file, chat_id=f"cid-{index}", chat_type="private", user_id="staff-1"
+        )
+
+    assert channel_state_module.load_conversation_target(state_file, "cid-0") is None
+    assert channel_state_module.load_conversation_target(state_file, "cid-1") is not None
+
+
+def test_conversation_target_survives_other_state_writes(tmp_path: Path):
+    state_file = tmp_path / "state.json"
+    channel_state_module.save_conversation_target(
+        state_file, chat_id=DT_CHAT_ID, chat_type="private", user_id="staff-1"
+    )
+
+    save_session_chat_map(state_file, {"s1": DT_CHAT_ID})
+
+    assert channel_state_module.load_conversation_target(state_file, DT_CHAT_ID) is not None
+
+
+def test_malformed_conversation_targets_are_dropped(tmp_path: Path):
+    state_file = tmp_path / "state.json"
+    state_file.write_text(
+        json.dumps(
+            {
+                "conversation_targets": {
+                    "bad-type": {"chat_type": 5, "user_id": "staff-1"},
+                    "bad-user": {"chat_type": "private", "user_id": {"id": 1}},
+                    "not-a-mapping": "private",
+                    "good": {"chat_type": "private", "user_id": 7, "title": 9},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert channel_state_module.load_conversation_target(state_file, "good") == {
+        "chat_type": "private",
+        "user_id": 7,
+        "title": None,
+    }
+    assert channel_state_module.load_conversation_target(state_file, "bad-type") is None

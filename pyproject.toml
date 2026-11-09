@@ -1,6 +1,6 @@
 [project]
-name = "telegram-acp-bot"
-description = "A Telegram bot that implements Agent Client Protocol to interact with AI agents"
+name = "acp-chat-bot"
+description = "A multi-channel chat bot that implements Agent Client Protocol to interact with AI agents"
 authors = [{name = "Martín Gaitán", email = "gaitan@gmail.com"}]
 license = "BSD-3-Clause"
 license-files = ["LICENSE"]
@@ -24,9 +24,11 @@ classifiers = [
 ]
 dependencies = [
     "agent-client-protocol>=0.9.0a1",
+    "aiohttp>=3.14.5",
     "aiolimiter>=1.2.1",
     "croniter>=6.2.4",
     "dateparser>=1.4.0",
+    "dingtalk-stream>=0.24.3",
     "mcp>=1.26.0,<2",
     "python-dotenv>=1.2.2",
     "python-telegram-bot>=22.7",
@@ -40,7 +42,7 @@ requires = ["uv_build>=0.8.9,<0.9.0"]
 build-backend = "uv_build"
 
 [tool.uv.build-backend]
-module-name = "telegram_acp_bot"
+module-name = ["acp_chat_bot", "telegram_acp_bot"]
 
 [tool.uv]
 exclude-newer = "1 week"
@@ -89,7 +91,7 @@ select = [
 
 [tool.pytest.ini_options]
 addopts = [
-    "--cov=telegram_acp_bot",
+    "--cov=acp_chat_bot",
     "--cov-report=term-missing",
     "--cov-fail-under=100",
     "--strict-markers",          # Fail if markers are not registered in pytest configuration
@@ -106,7 +108,9 @@ Issues = "https://github.com/mgaitan/telegram-acp-bot/issues"
 Funding = "https://github.com/sponsors/mgaitan"
 
 [project.scripts]
-telegram-acp-bot = "telegram_acp_bot:main"
+acp-chat-bot = "acp_chat_bot:main"
+# Deprecated alias kept during the rename to acp-chat-bot.
+telegram-acp-bot = "acp_chat_bot:main"
 
 [dependency-groups]
 test = [

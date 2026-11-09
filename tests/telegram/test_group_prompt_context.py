@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from telegram_acp_bot.telegram.bridge import GROUP_MENTION_REMINDER, PENDING_MEDIA_HEADER, TelegramBridge
+from acp_chat_bot.channels.telegram.bridge import GROUP_MENTION_REMINDER, PENDING_MEDIA_HEADER, TelegramBridge
 from tests.telegram.support import *
 
 PHOTO_FILE_ID = "AGAC_photo_file_id_value"

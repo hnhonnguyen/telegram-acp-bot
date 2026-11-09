@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from telegram_acp_bot.config_file import ConfigFileError, load_config_file
+from acp_chat_bot.config_file import ConfigFileError, load_config_file
 
 CONNECT_TIMEOUT_VALUE = 2.5
 
@@ -375,3 +375,72 @@ def test_only_must_not_be_empty(tmp_path: Path):
 
 def test_only_accepts_a_list_of_names(tmp_path: Path):
     assert load_config_file(write_config(tmp_path, {"only": ["qoder"]})) == {"only": ["qoder"]}
+
+
+# DingTalk channel validation tests
+
+
+def test_channel_must_be_a_known_name(tmp_path: Path):
+    with pytest.raises(ConfigFileError, match=r"'channel' must be one of"):
+        load_config_file(write_config(tmp_path, {"channel": "matrix"}))
+
+
+def test_channel_accepts_dingtalk(tmp_path: Path):
+    assert load_config_file(write_config(tmp_path, {"channel": "dingtalk"})) == {"channel": "dingtalk"}
+
+
+def test_dingtalk_must_be_an_object(tmp_path: Path):
+    with pytest.raises(ConfigFileError, match=r"'dingtalk' must be a JSON object"):
+        load_config_file(write_config(tmp_path, {"dingtalk": "credentials"}))
+
+
+@pytest.mark.parametrize("key", ["client_id", "client_secret", "robot_code"])
+def test_dingtalk_credentials_must_be_strings(key: str, tmp_path: Path):
+    with pytest.raises(ConfigFileError, match=rf"'dingtalk\.{key}' must be a string"):
+        load_config_file(write_config(tmp_path, {"dingtalk": {key: 42}}))
+
+
+@pytest.mark.parametrize("key", ["allowed_staff_ids", "allowed_nicknames", "schedule_languages"])
+def test_dingtalk_lists_must_be_lists_of_strings(key: str, tmp_path: Path):
+    with pytest.raises(ConfigFileError, match=rf"'dingtalk\.{key}' must be a list of strings"):
+        load_config_file(write_config(tmp_path, {"dingtalk": {key: ["ok", 42]}}))
+
+
+def test_dingtalk_group_options_are_validated(tmp_path: Path):
+    with pytest.raises(ConfigFileError, match=r"'dingtalk\.group_require_mention' must be a boolean"):
+        load_config_file(write_config(tmp_path, {"dingtalk": {"group_require_mention": "yes"}}))
+
+    with pytest.raises(ConfigFileError, match=r"'dingtalk\.group_history_size' must be a non-negative integer"):
+        load_config_file(write_config(tmp_path, {"dingtalk": {"group_history_size": "200"}}))
+
+
+def test_dingtalk_section_loads(tmp_path: Path):
+    dingtalk = {
+        "client_id": "id",
+        "client_secret": "secret",
+        "robot_code": "robot",
+        "allowed_staff_ids": ["staff-1"],
+        "allowed_nicknames": ["alice"],
+        "schedule_languages": ["vi"],
+        "group_require_mention": True,
+        "group_history_size": 10,
+    }
+    data = {"channel": "dingtalk", "dingtalk": dingtalk}
+
+    assert load_config_file(write_config(tmp_path, data)) == data
+
+
+def test_agent_channel_is_validated(tmp_path: Path):
+    with pytest.raises(ConfigFileError, match=r"agents\.qoder: 'channel' must be one of"):
+        load_config_file(write_config(tmp_path, {"agents": {"qoder": {"channel": "matrix"}}}))
+
+
+def test_agent_dingtalk_section_is_validated(tmp_path: Path):
+    with pytest.raises(ConfigFileError, match=r"agents\.qoder: 'dingtalk\.client_id' must be a string"):
+        load_config_file(write_config(tmp_path, {"agents": {"qoder": {"dingtalk": {"client_id": 42}}}}))
+
+
+def test_agent_dingtalk_section_loads(tmp_path: Path):
+    data = {"agents": {"qoder": {"channel": "dingtalk", "dingtalk": {"allowed_staff_ids": ["staff-1"]}}}}
+
+    assert load_config_file(write_config(tmp_path, data)) == data

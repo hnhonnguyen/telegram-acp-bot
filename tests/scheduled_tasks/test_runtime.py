@@ -10,14 +10,20 @@ from typing import cast
 import pytest
 from telegram import MessageEntity, Update
 
-from telegram_acp_bot.acp.models import (
+from acp_chat_bot.acp.models import (
     AgentActivityBlock,
     AgentOutputLimitExceededError,
     AgentReply,
     FilePayload,
     ImagePayload,
 )
-from telegram_acp_bot.scheduled_tasks import (
+from acp_chat_bot.channels.telegram import app as app_module
+from acp_chat_bot.channels.telegram import bot as bot_module
+from acp_chat_bot.channels.telegram.app import build_application
+from acp_chat_bot.channels.telegram.bot import AgentService, Application
+from acp_chat_bot.channels.telegram.bridge import TelegramBridge
+from acp_chat_bot.channels.telegram.config import make_config
+from acp_chat_bot.scheduled_tasks import (
     ScheduledTask,
     ScheduledTaskDeferredError,
     ScheduledTaskExecutionError,
@@ -25,14 +31,8 @@ from telegram_acp_bot.scheduled_tasks import (
     ScheduledTaskScheduler,
     ScheduledTaskStore,
 )
-from telegram_acp_bot.scheduled_tasks.models import ScheduledTaskMode
-from telegram_acp_bot.scheduled_tasks.store import default_scheduled_tasks_db_path, format_utc_timestamp
-from telegram_acp_bot.telegram import app as app_module
-from telegram_acp_bot.telegram import bot as bot_module
-from telegram_acp_bot.telegram.app import build_application
-from telegram_acp_bot.telegram.bot import AgentService, Application
-from telegram_acp_bot.telegram.bridge import TelegramBridge
-from telegram_acp_bot.telegram.config import make_config
+from acp_chat_bot.scheduled_tasks.models import ScheduledTaskMode
+from acp_chat_bot.scheduled_tasks.store import default_scheduled_tasks_db_path, format_utc_timestamp
 from tests.telegram.support import TEST_CHAT_ID, DummyBot
 from tests.telegram.support import DummyMessage as DummyBotMessage
 
@@ -827,7 +827,7 @@ async def test_bind_pending_scheduled_tasks_logs_and_continues_on_store_error(mo
         "bind_unanchored_tasks",
         side_effect=RuntimeError("bind boom"),
     )
-    log_exception = mocker.patch("telegram_acp_bot.telegram.bridge.logger.exception")
+    log_exception = mocker.patch("acp_chat_bot.channels.telegram.bridge.logger.exception")
 
     await bridge._bind_pending_scheduled_tasks(chat_id=TEST_CHAT_ID, anchor_message_id=ANCHOR_MESSAGE_ID)
 

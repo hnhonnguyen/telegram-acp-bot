@@ -145,8 +145,9 @@ def test_load_group_history_drops_malformed_entries(tmp_path: Path):
             {
                 "message_history": {
                     "123": [
-                        {"message_id": 1, "text": "ok", "sender_id": "nope", "sender_name": 5, "sent_at": 9},
-                        {"message_id": "nope", "text": "bad id"},
+                        {"message_id": 1, "text": "ok", "sender_id": {"bad": 1}, "sender_name": 5, "sent_at": 9},
+                        {"message_id": [], "text": "bad id"},
+                        {"message_id": "dt-2", "text": "string id", "sender_id": "staff-1"},
                         {"message_id": 2},
                         "not a mapping",
                     ],
@@ -159,7 +160,8 @@ def test_load_group_history_drops_malformed_entries(tmp_path: Path):
     )
 
     assert load_group_history(state_file, chat_id=TEST_HISTORY_CHAT_ID) == [
-        {"message_id": 1, "sender_id": None, "sender_name": None, "text": "ok", "sent_at": ""}
+        {"message_id": 1, "sender_id": None, "sender_name": None, "text": "ok", "sent_at": ""},
+        {"message_id": "dt-2", "sender_id": "staff-1", "sender_name": None, "text": "string id", "sent_at": ""},
     ]
 
 

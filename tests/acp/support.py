@@ -36,8 +36,8 @@ from acp.schema import (
     ToolCallStart,
 )
 
-from telegram_acp_bot.acp.service import AGENT_EXIT_NOTICE, AcpAgentService, _AcpClient, _PendingPermission
-from telegram_acp_bot.acp.models import (
+from acp_chat_bot.acp.service import AGENT_EXIT_NOTICE, AcpAgentService, _AcpClient, _PendingPermission
+from acp_chat_bot.acp.models import (
     AgentActivityBlock,
     AgentCommand,
     AgentConnectionLostError,
@@ -48,10 +48,10 @@ from telegram_acp_bot.acp.models import (
     PromptFile,
     PromptImage,
 )
-from telegram_acp_bot.core.session_registry import SessionRegistry
-from telegram_acp_bot.channel_policy import CHANNEL_POLICY_REMINDER
-from telegram_acp_bot.logging_context import LOG_TEXT_PREVIEW_MAX_CHARS, log_text_preview
-from telegram_acp_bot.mcp.state import (
+from acp_chat_bot.core.session_registry import SessionRegistry
+from acp_chat_bot.channel_policy import CHANNEL_POLICY_REMINDER
+from acp_chat_bot.logging_context import LOG_TEXT_PREVIEW_MAX_CHARS, log_text_preview
+from acp_chat_bot.mcp.state import (
     PromptRequester,
     load_last_session_id,
     load_pending_media,

@@ -2,6 +2,12 @@
 
 This guide shows the main command flow for day-to-day usage.
 
+```{note}
+The same commands work on DingTalk. Choice prompts arrive as numbered replies instead of inline
+buttons there, and the activity display falls back to separate messages. See {doc}`dingtalk` for
+the platform-specific setup and limitations.
+```
+
 ## 1. Start working (implicit session)
 
 Send a normal prompt. If the chat has no active session, the bot creates one automatically in the default workspace.

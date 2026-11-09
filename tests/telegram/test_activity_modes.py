@@ -6,7 +6,7 @@ import logging
 
 from tests.telegram.support import *
 
-from telegram_acp_bot.telegram.constants import COMPACT_STATUS_HINT_CHARS, COMPACT_STATUS_TICK_SECONDS
+from acp_chat_bot.channels.telegram.constants import COMPACT_STATUS_HINT_CHARS, COMPACT_STATUS_TICK_SECONDS
 
 SECOND_REPLY_MESSAGE_ID = 2
 
@@ -102,7 +102,7 @@ async def _drive_compact_refresher(bridge: TelegramBridge, mocker, *, ticks: int
         if steps > ticks:
             bridge._compact_status_label.pop(TEST_CHAT_ID, None)
 
-    mocker.patch("telegram_acp_bot.telegram.bridge.asyncio.sleep", side_effect=fake_sleep)
+    mocker.patch("acp_chat_bot.channels.telegram.bridge.asyncio.sleep", side_effect=fake_sleep)
     await bridge._refresh_compact_status(chat_id=TEST_CHAT_ID)
 
 
@@ -419,7 +419,7 @@ async def test_edit_rendered_chunk_treats_not_modified_entity_edit_as_success():
 
 async def test_edit_markdown_in_chat_convert_error_falls_back_to_plain(mocker):
 
-    mocker.patch("telegram_acp_bot.telegram.bridge.convert", side_effect=RuntimeError("bad"))
+    mocker.patch("acp_chat_bot.channels.telegram.bridge.convert", side_effect=RuntimeError("bad"))
     bot = DummyBot()
     bot.fail_api_requests = True
     result = await TelegramBridge._edit_markdown_in_chat(
@@ -431,7 +431,7 @@ async def test_edit_markdown_in_chat_convert_error_falls_back_to_plain(mocker):
 
 async def test_edit_markdown_in_chat_convert_error_returns_false_when_edit_fails(mocker):
 
-    mocker.patch("telegram_acp_bot.telegram.bridge.convert", side_effect=RuntimeError("bad"))
+    mocker.patch("acp_chat_bot.channels.telegram.bridge.convert", side_effect=RuntimeError("bad"))
     bot = FailingEditBot()
     result = await TelegramBridge._edit_markdown_in_chat(
         bot=cast(Bot, bot), chat_id=TEST_CHAT_ID, message_id=COMPACT_STATUS_MSG_ID, text="Hello"
@@ -913,7 +913,7 @@ async def test_compact_refresher_applies_at_most_one_edit_per_wait_period(mocker
             return
         bridge._compact_status_label[TEST_CHAT_ID] = labels[steps - 1]
 
-    mocker.patch("telegram_acp_bot.telegram.bridge.asyncio.sleep", side_effect=fake_sleep)
+    mocker.patch("acp_chat_bot.channels.telegram.bridge.asyncio.sleep", side_effect=fake_sleep)
     await bridge._refresh_compact_status(chat_id=TEST_CHAT_ID)
 
     assert [cast(str, m["text"]) for m in bot.edited_messages] == labels
@@ -942,7 +942,7 @@ async def test_compact_refresher_stops_when_the_status_message_is_cleared(mocker
         assert seconds == COMPACT_STATUS_TICK_SECONDS
         bridge._compact_status_msg_id.pop(TEST_CHAT_ID, None)
 
-    mocker.patch("telegram_acp_bot.telegram.bridge.asyncio.sleep", side_effect=clear_message)
+    mocker.patch("acp_chat_bot.channels.telegram.bridge.asyncio.sleep", side_effect=clear_message)
     await bridge._refresh_compact_status(chat_id=TEST_CHAT_ID)
 
     assert bot.edited_messages == []
@@ -959,7 +959,7 @@ async def test_compact_refresher_task_removes_itself_when_the_prompt_ends(mocker
         assert seconds == COMPACT_STATUS_TICK_SECONDS
         bridge._compact_status_label.pop(TEST_CHAT_ID, None)
 
-    mocker.patch("telegram_acp_bot.telegram.bridge.asyncio.sleep", side_effect=end_prompt)
+    mocker.patch("acp_chat_bot.channels.telegram.bridge.asyncio.sleep", side_effect=end_prompt)
     bridge._ensure_compact_status_refresher(chat_id=TEST_CHAT_ID)
     await bridge._compact_status_tasks[TEST_CHAT_ID]
 

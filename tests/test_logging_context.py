@@ -6,7 +6,7 @@ from typing import Any, cast
 
 import pytest
 
-from telegram_acp_bot.logging_context import bind_log_context, configure_logging, get_log_context
+from acp_chat_bot.logging_context import bind_log_context, configure_logging, get_log_context
 
 
 def _raise_runtime_error() -> None:
@@ -34,7 +34,7 @@ def test_configure_logging_text_includes_context_fields(caplog: pytest.LogCaptur
         added_handler = root.handlers[-1]
         root.addHandler(caplog.handler)
         root.setLevel(logging.INFO)
-        logger = logging.getLogger("telegram_acp_bot.test")
+        logger = logging.getLogger("acp_chat_bot.test")
         with bind_log_context(agent="qoder", chat_id=42, session_id="s-1", prompt_cycle_id="c-1"):
             logger.info("hello")
     finally:
@@ -70,7 +70,7 @@ def test_configure_logging_json_includes_context_fields(caplog: pytest.LogCaptur
         formatter = added_handler.formatter
         root.addHandler(caplog.handler)
         root.setLevel(logging.INFO)
-        logger = logging.getLogger("telegram_acp_bot.test")
+        logger = logging.getLogger("acp_chat_bot.test")
         with bind_log_context(agent="qoder", chat_id=7, session_id="session-7", prompt_cycle_id="cycle-7"):
             logger.info("json hello")
     finally:
@@ -107,7 +107,7 @@ def test_configure_logging_json_includes_exception_field(caplog: pytest.LogCaptu
         formatter = added_handler.formatter
         root.addHandler(caplog.handler)
         root.setLevel(logging.INFO)
-        logger = logging.getLogger("telegram_acp_bot.test")
+        logger = logging.getLogger("acp_chat_bot.test")
         try:
             _raise_runtime_error()
         except RuntimeError:
@@ -176,7 +176,7 @@ def test_configure_logging_chains_existing_log_record_factory(caplog: pytest.Log
         added_handler = root.handlers[-1]
         root.addHandler(caplog.handler)
         root.setLevel(logging.INFO)
-        logging.getLogger("telegram_acp_bot.test").info("factory chain")
+        logging.getLogger("acp_chat_bot.test").info("factory chain")
     finally:
         if added_handler is not None:
             root.removeHandler(added_handler)

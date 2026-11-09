@@ -1,9 +1,9 @@
-# Telegram ACP bot
+# ACP chat bot
 
 [![CI](https://github.com/mgaitan/telegram-acp-bot/actions/workflows/ci.yml/badge.svg)](https://github.com/mgaitan/telegram-acp-bot/actions/workflows/ci.yml)
 [![docs](https://img.shields.io/badge/docs-blue.svg?style=flat)](https://mgaitan.github.io/telegram-acp-bot/)
 [![GitHub](https://img.shields.io/badge/GitHub-repository-181717?logo=github)](https://github.com/mgaitan/telegram-acp-bot)
-[![pypi version](https://img.shields.io/pypi/v/telegram-acp-bot?logo=pypi&logoColor=white)](https://pypi.org/project/telegram-acp-bot/)
+[![pypi version](https://img.shields.io/pypi/v/acp-chat-bot?logo=pypi&logoColor=white)](https://pypi.org/project/acp-chat-bot/)
 [![Changelog](https://img.shields.io/github/v/release/mgaitan/telegram-acp-bot?include_prereleases&label=changelog)](https://github.com/mgaitan/telegram-acp-bot/releases)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/mgaitan/telegram-acp-bot/actions/workflows/ci.yml)
 [![ty](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ty/main/assets/badge/v0.json)](https://github.com/astral-sh/ty)
@@ -87,14 +87,14 @@ Software is changing incredibly fast, and we no longer need to write every line 
 
 ACP is the open protocol adopted by the industry to connect user interfaces to AI agents such as Codex, Claude Code, Gemini CLI, and [many others](https://agentclientprotocol.com/registry/index) that work on your machine.
 
-Telegram ACP bot is a full-featured, [open-source](https://github.com/mgaitan/telegram-acp-bot) ACP client that allows you to control your agent wherever you are. The good part? You can start an agent session on your computer from your preferred editor/CLI/IDE and continue it later on Telegram, or do it the other way around.
+Telegram ACP bot is a full-featured, [open-source](https://github.com/mgaitan/telegram-acp-bot) ACP client that allows you to control your agent wherever you are. It runs on **Telegram** or **DingTalk**, one channel per agent. The good part? You can start an agent session on your computer from your preferred editor/CLI/IDE and continue it later on Telegram, or do it the other way around.
 
 **Don't watch the computer. Watch the sky.**
 
 Start with:
 
 ```bash
-uvx telegram-acp-bot \
+uvx --from acp-chat-bot acp-chat-bot \
   --telegram-token 123456:abc \
   --agent-command "your acp capable agent" \
   --allowed-user-id 123456789
@@ -104,6 +104,8 @@ uvx telegram-acp-bot \
 
 If you want the quickest tour of what the bot can do, these are good places to start.
 
+- {doc}`dingtalk` explains how to run the same bot on DingTalk Stream mode.
+- {doc}`architecture` maps the transport-neutral core and the two channel adapters.
 - {ref}`mcp-feature-attachments` explains how the agent can reply with images and files in the same Telegram chat.
 - {ref}`mcp-feature-reactions` shows how the Telegram channel can use native message reactions for lightweight acknowledgements.
 - {ref}`deferred-followups-ux` shows how scheduled tasks work as conversational follow-ups instead of technical status messages.
@@ -117,8 +119,10 @@ If you want the quickest tour of what the bot can do, these are good places to s
 :caption: Documentation
 
 how-to.md
+dingtalk.md
 deferred_followups.md
 agents.md
+architecture.md
 cli.md
 mcp.md
 configuration.md

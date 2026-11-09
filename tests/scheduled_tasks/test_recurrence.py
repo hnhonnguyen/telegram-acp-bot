@@ -2,7 +2,7 @@ from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
-from telegram_acp_bot.scheduled_tasks.recurrence import (
+from acp_chat_bot.scheduled_tasks.recurrence import (
     CRON_EXPRESSION_MAX_CHARS,
     InvalidCronExpressionError,
     next_occurrence,

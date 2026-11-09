@@ -16,14 +16,14 @@ from telegram import (
 )
 from telegram.error import TelegramError
 
-from telegram_acp_bot import main
-from telegram_acp_bot.register_commands import (
+from acp_chat_bot import main
+from acp_chat_bot.channels.telegram.bot import BOT_COMMANDS
+from acp_chat_bot.register_commands import (
     SCOPE_CHOICES,
     _call_api,
     get_register_commands_parser,
     register_commands_main,
 )
-from telegram_acp_bot.telegram.bot import BOT_COMMANDS
 
 QODER_TOKEN = "1:qoder"
 CLAUDE_TOKEN = "2:claude"
@@ -85,7 +85,7 @@ def test_register_commands_main_reports_an_unreadable_discovered_config(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
     """A discovered config file that fails validation stops the run before any API call."""
-    config_dir = tmp_path / "config" / "telegram_acp_bot"
+    config_dir = tmp_path / "config" / "acp_chat_bot"
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     config_dir.mkdir(parents=True)
     (config_dir / "config.json").write_text("{not valid json")
@@ -152,7 +152,7 @@ def test_dry_run_no_language_code(capsys: pytest.CaptureFixture):
 
 def test_register_success(mocker, capsys: pytest.CaptureFixture):
     """Successful set_my_commands prints confirmation and returns 0."""
-    mocker.patch("telegram_acp_bot.register_commands._call_api", new=mocker.AsyncMock())
+    mocker.patch("acp_chat_bot.register_commands._call_api", new=mocker.AsyncMock())
     rc = register_commands_main(["--telegram-token", "TOKEN"])
     assert rc == 0
     out = capsys.readouterr().out
@@ -164,7 +164,7 @@ def test_the_api_path_silences_transport_logs_that_carry_the_token(monkeypatch: 
     """httpx logs the whole request URL at INFO, and that URL is the bot token."""
     for name in ("httpx", "httpcore", "telegram.ext", "apscheduler"):
         monkeypatch.setattr(logging.getLogger(name), "level", logging.NOTSET)
-    mocker.patch("telegram_acp_bot.register_commands._call_api", new=mocker.AsyncMock())
+    mocker.patch("acp_chat_bot.register_commands._call_api", new=mocker.AsyncMock())
 
     assert register_commands_main(["--telegram-token", "TOKEN"]) == 0
 
@@ -174,7 +174,7 @@ def test_the_api_path_silences_transport_logs_that_carry_the_token(monkeypatch: 
 
 def test_delete_success(mocker, capsys: pytest.CaptureFixture):
     """Successful delete_my_commands prints confirmation and returns 0."""
-    mocker.patch("telegram_acp_bot.register_commands._call_api", new=mocker.AsyncMock())
+    mocker.patch("acp_chat_bot.register_commands._call_api", new=mocker.AsyncMock())
     rc = register_commands_main(["--telegram-token", "TOKEN", "--delete"])
     assert rc == 0
     out = capsys.readouterr().out
@@ -183,7 +183,7 @@ def test_delete_success(mocker, capsys: pytest.CaptureFixture):
 
 def test_register_with_language_code(mocker, capsys: pytest.CaptureFixture):
     """Successful registration with language_code shows it in output."""
-    mocker.patch("telegram_acp_bot.register_commands._call_api", new=mocker.AsyncMock())
+    mocker.patch("acp_chat_bot.register_commands._call_api", new=mocker.AsyncMock())
     rc = register_commands_main(["--telegram-token", "TOKEN", "--language-code", "en"])
     assert rc == 0
     out = capsys.readouterr().out
@@ -193,7 +193,7 @@ def test_register_with_language_code(mocker, capsys: pytest.CaptureFixture):
 def test_register_telegram_error_returns_1(mocker, capsys: pytest.CaptureFixture):
     """TelegramError is caught, printed to stderr, and exits with code 1."""
     mocker.patch(
-        "telegram_acp_bot.register_commands._call_api",
+        "acp_chat_bot.register_commands._call_api",
         new=mocker.AsyncMock(side_effect=TelegramError("Invalid token")),
     )
     rc = register_commands_main(["--telegram-token", "BADTOKEN"])
@@ -209,7 +209,7 @@ def test_register_telegram_error_returns_1(mocker, capsys: pytest.CaptureFixture
 
 def test_main_dispatches_to_register_commands(mocker, capsys: pytest.CaptureFixture):
     """main(['register-commands', ...]) delegates to register_commands_main."""
-    mocker.patch("telegram_acp_bot.register_commands._call_api", new=mocker.AsyncMock())
+    mocker.patch("acp_chat_bot.register_commands._call_api", new=mocker.AsyncMock())
     rc = main(["register-commands", "--telegram-token", "TOKEN", "--dry-run"])
     assert rc == 0
     out = capsys.readouterr().out
@@ -227,7 +227,7 @@ async def test_call_api_set_default_scope(mocker):
     mock_bot = mocker.AsyncMock()
     mock_bot.__aenter__ = mocker.AsyncMock(return_value=mock_bot)
     mock_bot.__aexit__ = mocker.AsyncMock(return_value=False)
-    mocker.patch("telegram_acp_bot.register_commands.Bot", return_value=mock_bot)
+    mocker.patch("acp_chat_bot.register_commands.Bot", return_value=mock_bot)
 
     await _call_api(token="TOKEN", scope_str="default", language_code=None, delete=False)
 
@@ -243,7 +243,7 @@ async def test_call_api_set_all_private_chats(mocker):
     mock_bot = mocker.AsyncMock()
     mock_bot.__aenter__ = mocker.AsyncMock(return_value=mock_bot)
     mock_bot.__aexit__ = mocker.AsyncMock(return_value=False)
-    mocker.patch("telegram_acp_bot.register_commands.Bot", return_value=mock_bot)
+    mocker.patch("acp_chat_bot.register_commands.Bot", return_value=mock_bot)
 
     await _call_api(token="TOKEN", scope_str="all_private_chats", language_code="en", delete=False)
 
@@ -259,7 +259,7 @@ async def test_call_api_set_all_group_chats(mocker):
     mock_bot = mocker.AsyncMock()
     mock_bot.__aenter__ = mocker.AsyncMock(return_value=mock_bot)
     mock_bot.__aexit__ = mocker.AsyncMock(return_value=False)
-    mocker.patch("telegram_acp_bot.register_commands.Bot", return_value=mock_bot)
+    mocker.patch("acp_chat_bot.register_commands.Bot", return_value=mock_bot)
 
     await _call_api(token="TOKEN", scope_str="all_group_chats", language_code=None, delete=False)
 
@@ -273,7 +273,7 @@ async def test_call_api_set_all_chat_administrators(mocker):
     mock_bot = mocker.AsyncMock()
     mock_bot.__aenter__ = mocker.AsyncMock(return_value=mock_bot)
     mock_bot.__aexit__ = mocker.AsyncMock(return_value=False)
-    mocker.patch("telegram_acp_bot.register_commands.Bot", return_value=mock_bot)
+    mocker.patch("acp_chat_bot.register_commands.Bot", return_value=mock_bot)
 
     await _call_api(token="TOKEN", scope_str="all_chat_administrators", language_code=None, delete=False)
 
@@ -287,7 +287,7 @@ async def test_call_api_delete(mocker):
     mock_bot = mocker.AsyncMock()
     mock_bot.__aenter__ = mocker.AsyncMock(return_value=mock_bot)
     mock_bot.__aexit__ = mocker.AsyncMock(return_value=False)
-    mocker.patch("telegram_acp_bot.register_commands.Bot", return_value=mock_bot)
+    mocker.patch("acp_chat_bot.register_commands.Bot", return_value=mock_bot)
 
     await _call_api(token="TOKEN", scope_str="default", language_code=None, delete=True)
 
@@ -322,7 +322,7 @@ def agents_config(tmp_path: Path, data: dict | None = None) -> Path:
 def test_main_registers_every_declared_agent(mocker, monkeypatch, tmp_path):
     """A fleet config calls the API once per bot, each with its own token."""
     monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
-    call_api = mocker.patch("telegram_acp_bot.register_commands._call_api", new=mocker.AsyncMock())
+    call_api = mocker.patch("acp_chat_bot.register_commands._call_api", new=mocker.AsyncMock())
 
     assert main(["--config", str(agents_config(tmp_path)), "register-commands"]) == 0
     assert [call.kwargs["token"] for call in call_api.await_args_list] == [QODER_TOKEN, CLAUDE_TOKEN]
@@ -375,9 +375,7 @@ def test_register_commands_fails_when_one_agent_is_refused(mocker, monkeypatch, 
         if token == CLAUDE_TOKEN:
             raise TelegramError(REFUSED_MESSAGE)
 
-    call_api = mocker.patch(
-        "telegram_acp_bot.register_commands._call_api", new=mocker.AsyncMock(side_effect=refuse_claude)
-    )
+    call_api = mocker.patch("acp_chat_bot.register_commands._call_api", new=mocker.AsyncMock(side_effect=refuse_claude))
 
     assert main(["--config", str(agents_config(tmp_path)), "register-commands"]) == 1
     assert len(call_api.await_args_list) == FLEET_SIZE

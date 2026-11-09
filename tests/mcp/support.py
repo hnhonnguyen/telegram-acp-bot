@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from telegram_acp_bot.agent_identity import DEFAULT_AGENT_NAME, agent_state_dir
-from telegram_acp_bot.mcp import server as mcp_channel
-from telegram_acp_bot.mcp import state as channel_state_module
-from telegram_acp_bot.mcp.state import (
+from acp_chat_bot.agent_identity import DEFAULT_AGENT_NAME, agent_state_dir
+from acp_chat_bot.mcp import server as mcp_channel
+from acp_chat_bot.mcp import state as channel_state_module
+from acp_chat_bot.mcp.state import (
     AGENT_NAME_ENV,
     MAX_GROUP_HISTORY_PER_CHAT,
     MAX_PENDING_MEDIA_PER_CHAT,
@@ -26,7 +26,7 @@ from telegram_acp_bot.mcp.state import (
     save_session_chat_map,
     take_pending_media,
 )
-from telegram_acp_bot.scheduled_tasks import ACP_SCHEDULED_TASKS_DB_ENV, ScheduledTaskStore
+from acp_chat_bot.scheduled_tasks import ACP_SCHEDULED_TASKS_DB_ENV, ScheduledTaskStore
 
 STATE_FILE_PRIVATE_MODE = 0o600
 TEST_SCHEDULED_CHAT_ID = 123

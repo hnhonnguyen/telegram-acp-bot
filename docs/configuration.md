@@ -17,9 +17,9 @@ JSON file.
 The bot loads configuration from the following locations (in order):
 
 1. `--config PATH`
-2. `./.telegram_acp_bot/config.json` (project-local)
-3. `{envvar}`XDG_CONFIG_HOME/telegram_acp_bot/config.json` (or `~/.config/telegram_acp_bot/config.json` when unset)
-4. `~/.telegram_acp_bot/config.json` (legacy)
+2. `./.acp_chat_bot/config.json` (project-local)
+3. `{envvar}`XDG_CONFIG_HOME/acp_chat_bot/config.json` (or `~/.config/acp_chat_bot/config.json` when unset)
+4. `~/.acp_chat_bot/config.json` (legacy)
 
 The first readable file wins. A path named with `--config` is used as given: when it cannot be
 read, the bot stops with that path in the message instead of quietly falling back to discovery.
@@ -47,6 +47,7 @@ follow the XDG Base Directory specification like any other Linux program.
 
 ```json
 {
+  "channel": "telegram",
   "telegram": {
     "bot_token": "123456:abc",
     "api_id": 12345,
@@ -58,6 +59,16 @@ follow the XDG Base Directory specification like any other Linux program.
     "group_media_queue": true,
     "group_history_size": 200,
     "status_reactions": "minimal"
+  },
+  "dingtalk": {
+    "client_id": "dingxxxxxxxx",
+    "client_secret": "secret",
+    "robot_code": "dingxxxxxxxx",
+    "allowed_staff_ids": ["0123456789"],
+    "allowed_nicknames": ["alice"],
+    "schedule_languages": ["en", "es"],
+    "group_require_mention": true,
+    "group_history_size": 200
   },
   "acp": {
     "agent_command": "npx @zed-industries/codex-acp",
@@ -99,8 +110,28 @@ follow the XDG Base Directory specification like any other Linux program.
 }
 ```
 
-Without `agents`, the flat `telegram`/`acp` sections describe one bot, which is all most
-setups need. With `agents`, the process runs one bot per entry; see {ref}`config-agents`.
+Without `agents`, the flat sections describe one bot, which is all most setups need. The
+channel is chosen by the top-level `channel` key (default `telegram`). With `agents`, the process
+runs one bot per entry; see {ref}`config-agents`.
+
+(channels)=
+## Channels
+
+One agent runs exactly one channel. The default is Telegram, so existing configs keep working
+without changes.
+
+- `"channel": "telegram"` requires `telegram.bot_token` and a Telegram allowlist.
+- `"channel": "dingtalk"` requires `dingtalk.client_id`, `dingtalk.client_secret`, and at least
+  one of `dingtalk.allowed_staff_ids` or `dingtalk.allowed_nicknames`.
+- A named agent may override the channel with `agents.<name>.channel` and use its own channel
+  section. Two agents may therefore run one on Telegram and one on DingTalk in the same process.
+
+Telegram-only settings (`telegram.api_id`, `telegram.api_hash`, `telegram.status_reactions`,
+`telegram.group_media_queue`) do not apply to DingTalk. DingTalk has no typing indicator or
+reaction API, so the bot treats both as unsupported there. `dingtalk.group_require_mention`
+defaults to `true` because DingTalk only delivers group messages that mention the robot.
+
+See {doc}`dingtalk` for the DingTalk setup guide.
 
 ### Validation
 
@@ -110,7 +141,7 @@ The config file is validated at startup. Invalid values (wrong types, unknown en
 ## Multiple agents
 
 One process can run several agents side by side: each declared agent gets its own ACP
-child process and its own Telegram bot, all polled from a single event loop. Everything
+child process and its own channel identity, all driven from a single event loop. Everything
 below describes that fleet; a config without `agents` runs exactly one bot named
 `default` and behaves as it always did.
 
@@ -122,32 +153,33 @@ scheduled-tasks database, so the shape is validated once rather than at each use
 
 ### What an agent may override
 
-Each `agents.<name>` entry may only repeat the top-level sections `telegram`, `acp` and
-`mcp_servers`, so one syntax describes a single bot and a fleet alike. The flat sections
-are the base and each agent layers its own keys on top, key by key. `mcp_servers` is
+Each `agents.<name>` entry may only repeat the top-level sections `channel`, `telegram`,
+`dingtalk`, `acp` and `mcp_servers`, so one syntax describes a single bot and a fleet alike. The
+flat sections are the base and each agent layers its own keys on top, key by key. `mcp_servers` is
 merged by server name and the agent's definition wins, so one agent can swap a shared
 server without changing it for the others.
 
-### Tokens
+### Channel identities
 
-Every bot needs a distinct Telegram token, resolved in this order:
+Every bot needs a distinct identity on its channel, resolved in this order:
 
-1. `agents.<name>.telegram.bot_token` in the config file.
-2. The flat base token (`--telegram-token` or `telegram.bot_token`), which an agent
-   inherits only when its own section sets nothing.
+1. `agents.<name>.telegram.bot_token` or `agents.<name>.dingtalk.client_id`.
+2. The flat base value (`--telegram-token`/`telegram.bot_token` or
+   `--dingtalk-client-id`/`dingtalk.client_id`), which an agent inherits only when its own
+   section sets nothing.
 
-Startup refuses two agents that end up on the same token and names both, because Telegram
-answers concurrent polls of one bot with error 409 — the fleet would look alive and lose
-updates. The flat sections still need a value, because they are what an unset key falls back
-to: the base carries `telegram.bot_token` and `acp.agent_command` alongside the per-agent
-keys that make each bot distinct. An agent that ends up on the base token is reported by the
-same duplicate-token check.
+Startup refuses two agents that end up on the same identity and names both, because two
+transports cannot poll one bot. For Telegram, the duplicate check prevents the concurrent-polling
+error 409; for DingTalk, it prevents two Stream connections claiming the same robot. The flat
+sections still need a value, because they are what an unset key falls back to: the base carries
+the credentials and `acp.agent_command` alongside the per-agent keys that make each bot distinct.
+An agent that ends up on the base identity is reported by the same duplicate check.
 
 ### Declaring agents on the command line
 
 - `--agent NAME=COMMAND` declares an agent, or overrides the command of a declared one,
   without editing the config file. It is repeatable. A name that only appears here still
-  needs a token from one of the sources above.
+  needs channel credentials from one of the sources above.
 - `--only NAME` runs a subset of the declared agents. It is repeatable and refuses a name
   that nothing declares. The config file offers the same list under a top-level `"only"`
   key, which the flag replaces.
@@ -183,23 +215,29 @@ tellable apart. To run two agents, follow {ref}`how-to-two-agents`.
 
 ## CLI flags
 
-CLI flags take the highest priority and override the config file. Run `telegram-acp-bot --help` for the full list.
+CLI flags take the highest priority and override the config file. Run `acp-chat-bot --help` for the full list.
 
 Key flags and their config file equivalents:
 
 | CLI flag | Config key |
 |---|---|
 | `--config` | — (selects the file) |
+| `--channel` | `channel` |
 | `--telegram-token` | `telegram.bot_token` |
+| `--dingtalk-client-id` | `dingtalk.client_id` |
+| `--dingtalk-client-secret` | `dingtalk.client_secret` |
+| `--dingtalk-robot-code` | `dingtalk.robot_code` |
+| `--allowed-staff-id` | `dingtalk.allowed_staff_ids` |
+| `--allowed-dingtalk-nickname` | `dingtalk.allowed_nicknames` |
 | `--telegram-api-id` | `telegram.api_id` |
 | `--telegram-api-hash` | `telegram.api_hash` |
 | `--allowed-user-id` | `telegram.allowed_user_ids` |
 | `--allowed-username` | `telegram.allowed_usernames` |
-| `--schedule-language` | `telegram.schedule_languages` |
-| `--group-require-mention` | `telegram.group_require_mention` |
-| `--group-media-queue` | `telegram.group_media_queue` |
-| `--group-history-size` | `telegram.group_history_size` |
-| `--status-reactions` | `telegram.status_reactions` |
+| `--schedule-language` | `telegram.schedule_languages` or `dingtalk.schedule_languages` |
+| `--group-require-mention` | `telegram.group_require_mention` or `dingtalk.group_require_mention` |
+| `--group-media-queue` | `telegram.group_media_queue` (Telegram only) |
+| `--group-history-size` | `telegram.group_history_size` or `dingtalk.group_history_size` |
+| `--status-reactions` | `telegram.status_reactions` (Telegram only) |
 | `--agent-command` | `acp.agent_command` |
 | `--agent NAME=COMMAND` | `agents` |
 | `--only NAME` | `only` |
@@ -246,8 +284,22 @@ The equivalent config file is:
 Then run it with an explicit path (there is no `ACP_CONFIG_FILE` anymore):
 
 ```bash
-telegram-acp-bot --config /home/alice/.acp/config.json
+acp-chat-bot --config /home/alice/.acp/config.json
 ```
+
+### From `telegram-acp-bot` to `acp-chat-bot`
+
+The distribution, import package and command were renamed when DingTalk support was added:
+
+- `telegram-acp-bot` → `acp-chat-bot` (the old command remains as a deprecated alias)
+- `import telegram_acp_bot` → `import acp_chat_bot` (the old import forwards module by module)
+- `python -m telegram_acp_bot` → `python -m acp_chat_bot`
+
+Existing config files keep working: the channel defaults to `telegram`, and the older
+`.telegram_acp_bot` config locations are still discovered. The default state directory also keeps
+the `telegram-acp-bot` name so in-flight scheduled tasks and channel state are found after the
+upgrade. You can rename config files at your convenience; the bot prefers the `.acp_chat_bot`
+paths once they exist.
 
 ```{note}
 Because the bot token now lives in the JSON file, protect that file the way you would a
@@ -260,24 +312,48 @@ its own.
 
 ## MCP behavior
 
-The bot always advertises an internal MCP stdio server named `telegram-channel`
-to the ACP agent. No extra configuration is required.
+Each agent gets one internal MCP stdio server for its channel:
+
+- Telegram agents get `telegram-channel`, with Telegram attachment, reaction, history and
+  scheduling tools.
+- DingTalk agents get `dingtalk-channel`, with attachment, history and scheduling tools. There is
+  no reaction or MTProto tool there.
+
+No extra configuration is required; the bot points the server at the agent's own credentials and
+state file.
 
 For adding external MCP servers, see {doc}`mcp`.
 
 (mcp-channel-environment-variables)=
 ## MCP channel environment variables
 
-The internal `telegram-channel` server runs as a child process, and the ACP/MCP protocol
+The internal channel server runs as a child process, and the ACP/MCP protocol
 passes configuration to a child only through its environment. The bot therefore injects a
 fixed set of variables into each instance's server and ACP subprocess. **These are plumbing,
 not user settings** — you do not set them, and the bot overwrites them per instance so two
 agents in one process can never read each other's values.
 
 ```{glossary}
+ACP_CHANNEL_KIND
+  The channel this instance runs, `telegram` or `dingtalk`. Injected so the child server can
+  select channel-specific behavior without guessing.
+
 ACP_TELEGRAM_BOT_TOKEN
   The token this instance's internal MCP server uses when calling the Telegram Bot API.
-  Injected per agent, so each server speaks for its own bot.
+  Injected per agent, so each server speaks for its own bot. On DingTalk this variable carries
+  the client ID instead, because the context resolver needs one opaque credential slot.
+
+ACP_DINGTALK_CLIENT_ID
+  The DingTalk Stream client ID (AppKey) used by `dingtalk-channel` for proactive sends and
+  media uploads. Injected only on DingTalk agents.
+
+ACP_DINGTALK_CLIENT_SECRET
+  The DingTalk client secret paired with `ACP_DINGTALK_CLIENT_ID`. Injected only on DingTalk
+  agents.
+
+ACP_DINGTALK_ROBOT_CODE
+  The DingTalk robot code used by proactive sends; defaults to the client ID when the config
+  does not set `dingtalk.robot_code`.
 
 ACP_TELEGRAM_API_ID
   The Telegram API id of the app whose credentials enable MTProto file transfers:
@@ -309,9 +385,9 @@ ACP_TELEGRAM_AGENT_NAME
   under `.telegram-media/<name>`.
 
 ACP_TELEGRAM_CHANNEL_ALLOW_PATH
-  Enables `path` inputs for the MCP `telegram_send_attachment` tool. Set from
-  `acp.allow_path_inputs` (default `false`), which only opens the tool to local file paths
-  when you deliberately trust the agent to read them.
+  Enables `path` inputs for the MCP attachment tools (`telegram_send_attachment` and
+  `dingtalk_send_attachment`). Set from `acp.allow_path_inputs` (default `false`), which only
+  opens the tools to local file paths when you deliberately trust the agent to read them.
 ```
 
 Security notes:

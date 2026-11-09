@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from telegram_acp_bot.scheduled_tasks.store import (
+from acp_chat_bot.scheduled_tasks.store import (
     OPTIONAL_SCHEDULED_TASK_COLUMNS,
     ScheduledTaskStore,
     format_utc_timestamp,
@@ -301,6 +301,33 @@ async def test_store_update_task_rejects_task_of_another_chat(tmp_path: Path):
     )
 
     assert updated is None
+
+
+async def test_store_preserves_opaque_string_ids(tmp_path: Path):
+    store = make_store(tmp_path)
+    now = datetime.now(UTC)
+    task = store.create_task(
+        chat_id="cid-dingtalk-group",
+        session_id="session-dt",
+        anchor_message_id="msg-anchor",
+        mode="notify",
+        notify_text="Ping now",
+        run_at=now + timedelta(minutes=5),
+        source_message_id="msg-source",
+        requester_user_id="staff-1",
+        requester_username="alice",
+        requester_name="Alice Doe",
+        chat_type="group",
+    )
+
+    loaded = store.get_task(task.id)
+
+    assert loaded is not None
+    assert loaded.chat_id == "cid-dingtalk-group"
+    assert loaded.anchor_message_id == "msg-anchor"
+    assert loaded.source_message_id == "msg-source"
+    assert loaded.requester_user_id == "staff-1"
+    assert [item.id for item in store.list_tasks_for_chat(chat_id="cid-dingtalk-group")] == [task.id]
 
 
 async def test_store_update_task_rejects_cancelled_task(tmp_path: Path):

@@ -10,8 +10,8 @@ from typing import cast
 import pytest
 from telethon.tl import types
 
-from telegram_acp_bot.mcp.tools import attachments as attachments_module
-from telegram_acp_bot.mcp.tools import mtproto as mtproto_module
+from acp_chat_bot.mcp.tools import attachments as attachments_module
+from acp_chat_bot.mcp.tools import mtproto as mtproto_module
 from tests.mcp.support import (
     AGENT_NAME_ENV,
     STATE_FILE_ENV,
@@ -32,7 +32,7 @@ async def test_send_attachment_from_path_as_photo(tmp_path: Path, monkeypatch: p
     monkeypatch.setenv(STATE_FILE_ENV, str(state_file))
     monkeypatch.setenv(mcp_channel.ALLOW_PATH_ENV, "1")
     bot = mocker.AsyncMock()
-    mocker.patch("telegram_acp_bot.mcp.tools.attachments.Bot", return_value=bot)
+    mocker.patch("acp_chat_bot.mcp.tools.attachments.Bot", return_value=bot)
 
     result = await mcp_channel.telegram_send_attachment(path=str(image_file))
 
@@ -51,7 +51,7 @@ async def test_send_attachment_from_base64_as_document(tmp_path: Path, monkeypat
     monkeypatch.setenv(TOKEN_ENV, "TOKEN")
     monkeypatch.setenv(STATE_FILE_ENV, str(state_file))
     bot = mocker.AsyncMock()
-    mocker.patch("telegram_acp_bot.mcp.tools.attachments.Bot", return_value=bot)
+    mocker.patch("acp_chat_bot.mcp.tools.attachments.Bot", return_value=bot)
 
     result = await mcp_channel.telegram_send_attachment(
         session_id="s1",
@@ -76,7 +76,7 @@ async def test_send_attachment_infers_last_active_session_when_multiple(
     monkeypatch.setenv(TOKEN_ENV, "TOKEN")
     monkeypatch.setenv(STATE_FILE_ENV, str(state_file))
     bot = mocker.AsyncMock()
-    mocker.patch("telegram_acp_bot.mcp.tools.attachments.Bot", return_value=bot)
+    mocker.patch("acp_chat_bot.mcp.tools.attachments.Bot", return_value=bot)
 
     result = await mcp_channel.telegram_send_attachment(
         data_base64=base64.b64encode(b"payload").decode("ascii"),
@@ -157,7 +157,7 @@ async def test_send_attachment_uses_overridden_name_for_mime_inference(
     monkeypatch.setenv(STATE_FILE_ENV, str(state_file))
     monkeypatch.setenv(mcp_channel.ALLOW_PATH_ENV, "1")
     bot = mocker.AsyncMock()
-    mocker.patch("telegram_acp_bot.mcp.tools.attachments.Bot", return_value=bot)
+    mocker.patch("acp_chat_bot.mcp.tools.attachments.Bot", return_value=bot)
 
     result = await mcp_channel.telegram_send_attachment(path=str(binary_file), name="forced.jpg")
 
@@ -189,7 +189,7 @@ async def test_fetch_attachment_writes_into_the_working_directory(
     workspace.mkdir()
     monkeypatch.chdir(workspace)
     bot = make_download_bot(mocker, b"jpeg-bytes")
-    mocker.patch("telegram_acp_bot.mcp.tools.attachments.Bot", return_value=bot)
+    mocker.patch("acp_chat_bot.mcp.tools.attachments.Bot", return_value=bot)
 
     result = await mcp_channel.telegram_fetch_attachment(session_id="s1", file_id="f1", mime_type="image/jpeg")
 
@@ -212,7 +212,7 @@ async def test_fetch_attachment_namespaces_media_by_agent(
     monkeypatch.chdir(workspace)
     monkeypatch.setenv(AGENT_NAME_ENV, "qoder")
     bot = make_download_bot(mocker, b"jpeg-bytes")
-    mocker.patch("telegram_acp_bot.mcp.tools.attachments.Bot", return_value=bot)
+    mocker.patch("acp_chat_bot.mcp.tools.attachments.Bot", return_value=bot)
 
     result = await mcp_channel.telegram_fetch_attachment(session_id="s1", file_id="f1", mime_type="image/jpeg")
 
@@ -229,7 +229,7 @@ async def test_fetch_attachment_honours_a_relative_dest(
     workspace.mkdir()
     monkeypatch.chdir(workspace)
     bot = make_download_bot(mocker, b"%PDF")
-    mocker.patch("telegram_acp_bot.mcp.tools.attachments.Bot", return_value=bot)
+    mocker.patch("acp_chat_bot.mcp.tools.attachments.Bot", return_value=bot)
 
     result = await mcp_channel.telegram_fetch_attachment(file_id="f1", dest="invoices/hoa-don.pdf")
 
@@ -240,7 +240,7 @@ async def test_fetch_attachment_honours_a_relative_dest(
 
 @pytest.mark.asyncio
 async def test_fetch_attachment_rejects_dest_outside_the_working_directory(mocker, channel_env: Path):
-    mocker.patch("telegram_acp_bot.mcp.tools.attachments.Bot", return_value=make_download_bot(mocker, b"x"))
+    mocker.patch("acp_chat_bot.mcp.tools.attachments.Bot", return_value=make_download_bot(mocker, b"x"))
 
     result = await mcp_channel.telegram_fetch_attachment(file_id="f1", dest="../../escape.png")
 
@@ -255,7 +255,7 @@ async def test_fetch_attachment_rejects_dest_that_is_a_directory(
     workspace = tmp_path / "ws"
     (workspace / "dir").mkdir(parents=True)
     monkeypatch.chdir(workspace)
-    mocker.patch("telegram_acp_bot.mcp.tools.attachments.Bot", return_value=make_download_bot(mocker, b"x"))
+    mocker.patch("acp_chat_bot.mcp.tools.attachments.Bot", return_value=make_download_bot(mocker, b"x"))
 
     result = await mcp_channel.telegram_fetch_attachment(file_id="f1", dest="dir")
 
@@ -267,7 +267,7 @@ async def test_fetch_attachment_rejects_dest_that_is_a_directory(
 async def test_fetch_attachment_reports_download_failures(mocker, channel_env: Path):
     bot = mocker.AsyncMock()
     bot.get_file.side_effect = OSError("telegram is unreachable")
-    mocker.patch("telegram_acp_bot.mcp.tools.attachments.Bot", return_value=bot)
+    mocker.patch("acp_chat_bot.mcp.tools.attachments.Bot", return_value=bot)
 
     result = await mcp_channel.telegram_fetch_attachment(file_id="f1")
 
@@ -277,7 +277,7 @@ async def test_fetch_attachment_reports_download_failures(mocker, channel_env: P
 
 @pytest.mark.asyncio
 async def test_fetch_attachment_reports_an_empty_payload(mocker, channel_env: Path):
-    mocker.patch("telegram_acp_bot.mcp.tools.attachments.Bot", return_value=make_download_bot(mocker, b""))
+    mocker.patch("acp_chat_bot.mcp.tools.attachments.Bot", return_value=make_download_bot(mocker, b""))
 
     result = await mcp_channel.telegram_fetch_attachment(file_id="f1")
 
@@ -290,7 +290,7 @@ async def test_fetch_attachment_rejects_an_unknown_session(mocker, tmp_path: Pat
     save_session_chat_map(tmp_path / "state.json", {"s1": 123})
     monkeypatch.setenv(TOKEN_ENV, "TOKEN")
     monkeypatch.setenv(STATE_FILE_ENV, str(tmp_path / "state.json"))
-    mocker.patch("telegram_acp_bot.mcp.tools.attachments.Bot", return_value=make_download_bot(mocker, b"x"))
+    mocker.patch("acp_chat_bot.mcp.tools.attachments.Bot", return_value=make_download_bot(mocker, b"x"))
 
     result = await mcp_channel.telegram_fetch_attachment(session_id="unknown", file_id="f1")
 
@@ -351,7 +351,7 @@ async def test_send_attachment_routes_video_natively(tmp_path: Path, monkeypatch
     monkeypatch.setenv(STATE_FILE_ENV, str(state_file))
     monkeypatch.setenv(mcp_channel.ALLOW_PATH_ENV, "1")
     bot = mocker.AsyncMock()
-    mocker.patch("telegram_acp_bot.mcp.tools.attachments.Bot", return_value=bot)
+    mocker.patch("acp_chat_bot.mcp.tools.attachments.Bot", return_value=bot)
 
     result = await mcp_channel.telegram_send_attachment(path=str(video_file))
 
@@ -368,7 +368,7 @@ async def test_send_attachment_routes_audio_natively(tmp_path: Path, monkeypatch
     monkeypatch.setenv(TOKEN_ENV, "TOKEN")
     monkeypatch.setenv(STATE_FILE_ENV, str(state_file))
     bot = mocker.AsyncMock()
-    mocker.patch("telegram_acp_bot.mcp.tools.attachments.Bot", return_value=bot)
+    mocker.patch("acp_chat_bot.mcp.tools.attachments.Bot", return_value=bot)
 
     result = await mcp_channel.telegram_send_attachment(
         data_base64=base64.b64encode(b"id3").decode("ascii"), name="song.mp3"
@@ -391,7 +391,7 @@ async def test_send_attachment_sends_multiple_files(tmp_path: Path, monkeypatch:
     monkeypatch.setenv(STATE_FILE_ENV, str(state_file))
     monkeypatch.setenv(mcp_channel.ALLOW_PATH_ENV, "1")
     bot = mocker.AsyncMock()
-    mocker.patch("telegram_acp_bot.mcp.tools.attachments.Bot", return_value=bot)
+    mocker.patch("acp_chat_bot.mcp.tools.attachments.Bot", return_value=bot)
 
     attachments = [{"path": str(photo)}, {"path": str(doc)}]
     result = await mcp_channel.telegram_send_attachment(attachments=attachments)
@@ -444,7 +444,7 @@ def mtproto_env(channel_env: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[
 def make_mtproto_client(mocker):
     client = mocker.AsyncMock()
     client.is_connected.return_value = True
-    mocker.patch("telegram_acp_bot.mcp.tools.mtproto.TelegramClient", mocker.MagicMock(return_value=client))
+    mocker.patch("acp_chat_bot.mcp.tools.mtproto.TelegramClient", mocker.MagicMock(return_value=client))
     return client
 
 
@@ -461,7 +461,7 @@ async def test_send_attachment_streams_an_oversized_path_over_mtproto(
     video = write_oversized(tmp_path, "clip.mp4")
     monkeypatch.setenv(mcp_channel.ALLOW_PATH_ENV, "1")
     bot = mocker.AsyncMock()
-    mocker.patch("telegram_acp_bot.mcp.tools.attachments.Bot", return_value=bot)
+    mocker.patch("acp_chat_bot.mcp.tools.attachments.Bot", return_value=bot)
     client = make_mtproto_client(mocker)
 
     result = await mcp_channel.telegram_send_attachment(path=str(video))
@@ -483,7 +483,7 @@ async def test_send_attachment_oversized_without_credentials_names_the_config(
     monkeypatch.delenv(mtproto_module.API_HASH_ENV, raising=False)
     video = write_oversized(tmp_path, "clip.mp4")
     monkeypatch.setenv(mcp_channel.ALLOW_PATH_ENV, "1")
-    mocker.patch("telegram_acp_bot.mcp.tools.attachments.Bot", return_value=mocker.AsyncMock())
+    mocker.patch("acp_chat_bot.mcp.tools.attachments.Bot", return_value=mocker.AsyncMock())
 
     result = await mcp_channel.telegram_send_attachment(path=str(video))
 
@@ -498,7 +498,7 @@ async def test_send_attachment_oversized_base64_keeps_the_name_and_routes_native
     tmp_path: Path, mocker, mtproto_env: Path
 ):
     client = make_mtproto_client(mocker)
-    mocker.patch("telegram_acp_bot.mcp.tools.attachments.Bot", return_value=mocker.AsyncMock())
+    mocker.patch("acp_chat_bot.mcp.tools.attachments.Bot", return_value=mocker.AsyncMock())
 
     result = await mcp_channel.telegram_send_attachment(
         data_base64=base64.b64encode(b"y" * (TINY_LIMIT + 1)).decode("ascii"), name="song.mp3"
@@ -520,7 +520,7 @@ async def test_send_attachment_oversized_path_honours_a_custom_name(
     archive = write_oversized(tmp_path, "archive.tar")
     monkeypatch.setenv(mcp_channel.ALLOW_PATH_ENV, "1")
     client = make_mtproto_client(mocker)
-    mocker.patch("telegram_acp_bot.mcp.tools.attachments.Bot", return_value=mocker.AsyncMock())
+    mocker.patch("acp_chat_bot.mcp.tools.attachments.Bot", return_value=mocker.AsyncMock())
 
     result = await mcp_channel.telegram_send_attachment(path=str(archive), name="release.tar")
 
@@ -541,7 +541,7 @@ async def test_send_attachment_routes_an_oversized_photo_without_extra_attribute
     photo = write_oversized(tmp_path, "panorama.jpg")
     monkeypatch.setenv(mcp_channel.ALLOW_PATH_ENV, "1")
     client = make_mtproto_client(mocker)
-    mocker.patch("telegram_acp_bot.mcp.tools.attachments.Bot", return_value=mocker.AsyncMock())
+    mocker.patch("acp_chat_bot.mcp.tools.attachments.Bot", return_value=mocker.AsyncMock())
 
     result = await mcp_channel.telegram_send_attachment(path=str(photo))
 
@@ -558,7 +558,7 @@ async def test_send_attachment_reports_an_mtproto_upload_failure(
     monkeypatch.setenv(mcp_channel.ALLOW_PATH_ENV, "1")
     client = make_mtproto_client(mocker)
     client.send_file = mocker.AsyncMock(side_effect=OSError("flood wait"))
-    mocker.patch("telegram_acp_bot.mcp.tools.attachments.Bot", return_value=mocker.AsyncMock())
+    mocker.patch("acp_chat_bot.mcp.tools.attachments.Bot", return_value=mocker.AsyncMock())
 
     result = await mcp_channel.telegram_send_attachment(path=str(video))
 
@@ -574,7 +574,7 @@ async def test_send_attachment_small_files_keep_the_bot_api_path(
     image.write_bytes(b"jpeg")
     monkeypatch.setenv(mcp_channel.ALLOW_PATH_ENV, "1")
     bot = mocker.AsyncMock()
-    mocker.patch("telegram_acp_bot.mcp.tools.attachments.Bot", return_value=bot)
+    mocker.patch("acp_chat_bot.mcp.tools.attachments.Bot", return_value=bot)
     client = make_mtproto_client(mocker)
 
     result = await mcp_channel.telegram_send_attachment(path=str(image))

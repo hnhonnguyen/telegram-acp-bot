@@ -5,19 +5,39 @@ from __future__ import annotations
 import asyncio
 import sys
 from pathlib import Path
+from typing import cast
 
 from acp.schema import HttpMcpServer, McpServerStdio
 
-from telegram_acp_bot.instance import build_bot_instance, build_channel_env, build_mcp_servers
-from telegram_acp_bot.mcp.state import AGENT_NAME_ENV, API_HASH_ENV, API_ID_ENV, STATE_FILE_ENV, TOKEN_ENV
-from telegram_acp_bot.mcp.tools.attachments import ALLOW_PATH_ENV
-from telegram_acp_bot.scheduled_tasks import ACP_SCHEDULED_TASKS_DB_ENV, ScheduledTaskScheduler, ScheduledTaskStore
-from telegram_acp_bot.telegram.bridge import TelegramBridge
+from acp_chat_bot.channels.dingtalk.api import DingTalkAPI
+from acp_chat_bot.channels.dingtalk.channel import DingTalkChannel
+from acp_chat_bot.channels.dingtalk.config import DingTalkConfig
+from acp_chat_bot.channels.dingtalk.runtime import DingTalkRuntime
+from acp_chat_bot.channels.telegram.bridge import TelegramBridge
+from acp_chat_bot.channels.telegram.config import BotConfig
+from acp_chat_bot.core.bridge import AgentChatBridge
+from acp_chat_bot.instance import build_bot_instance, build_channel_env, build_mcp_servers
+from acp_chat_bot.mcp.state import (
+    AGENT_NAME_ENV,
+    API_HASH_ENV,
+    API_ID_ENV,
+    CHANNEL_KIND_ENV,
+    DINGTALK_CLIENT_ID_ENV,
+    DINGTALK_CLIENT_SECRET_ENV,
+    DINGTALK_ROBOT_CODE_ENV,
+    STATE_FILE_ENV,
+    TOKEN_ENV,
+)
+from acp_chat_bot.mcp.tools.attachments import ALLOW_PATH_ENV
+from acp_chat_bot.scheduled_tasks import ACP_SCHEDULED_TASKS_DB_ENV, ScheduledTaskScheduler, ScheduledTaskStore
 from tests.test_agent_config import base_spec
 
 EXTRA_STATE = Path("/agents/qoder/channel-state.json")
 EXTRA_DB = Path("/agents/qoder/scheduled-tasks.sqlite3")
 OTHER_TOKEN = "222:other"
+DT_CLIENT_ID = "dt-client-id"
+DT_CLIENT_SECRET = "dt-client-secret"
+DT_ROBOT_CODE = "dt-robot-code"
 
 
 def test_build_bot_instance_hands_the_bridge_the_shared_stop_event():
@@ -44,12 +64,13 @@ def test_build_bot_instance_keeps_the_paths_of_its_own_agent(tmp_path: Path):
 
 def test_build_bot_instance_translates_the_spec_into_a_bot_config():
     instance = build_bot_instance(base_spec(), stop_event=asyncio.Event())
+    config = cast(BotConfig, instance.config)
 
-    assert instance.config.token == base_spec().token
-    assert instance.config.allowed_user_ids == {1}
-    assert instance.config.allowed_usernames == {"someone"}
-    assert instance.config.schedule_languages == ("en", "es")
-    assert instance.config.activity_mode == "normal"
+    assert config.token == base_spec().token
+    assert config.allowed_user_ids == {1}
+    assert config.allowed_usernames == {"someone"}
+    assert config.schedule_languages == ("en", "es")
+    assert config.activity_mode == "normal"
 
 
 def test_build_bot_instance_starts_the_declared_agent_command():
@@ -187,3 +208,125 @@ def test_build_mcp_servers_lets_an_external_channel_override_the_internal_one():
 
     assert len(servers) == 1
     assert servers[0].command == "custom-server"
+
+
+# DingTalk channel tests
+
+
+def dingtalk_spec(**overrides: object):
+    """A spec declaring one DingTalk robot instead of a Telegram token."""
+    return base_spec(
+        channel="dingtalk",
+        token="",
+        allowed_user_ids=(),
+        allowed_usernames=(),
+        dingtalk_client_id=DT_CLIENT_ID,
+        dingtalk_client_secret=DT_CLIENT_SECRET,
+        dingtalk_robot_code=DT_ROBOT_CODE,
+        allowed_staff_ids=("staff-1",),
+        **overrides,
+    )
+
+
+def test_build_channel_env_forwards_the_dingtalk_credentials():
+    env = build_channel_env(
+        state_file=EXTRA_STATE,
+        scheduled_tasks_db=EXTRA_DB,
+        allow_path_inputs=True,
+        agent_name="dt",
+        channel="dingtalk",
+        dingtalk_client_id=DT_CLIENT_ID,
+        dingtalk_client_secret=DT_CLIENT_SECRET,
+        dingtalk_robot_code=DT_ROBOT_CODE,
+    )
+
+    assert env[STATE_FILE_ENV] == str(EXTRA_STATE)
+    assert env[ACP_SCHEDULED_TASKS_DB_ENV] == str(EXTRA_DB)
+    assert env[ALLOW_PATH_ENV] == "1"
+    assert env[AGENT_NAME_ENV] == "dt"
+    assert env[TOKEN_ENV] == DT_CLIENT_ID
+    assert env[CHANNEL_KIND_ENV] == "dingtalk"
+    assert env[DINGTALK_CLIENT_ID_ENV] == DT_CLIENT_ID
+    assert env[DINGTALK_CLIENT_SECRET_ENV] == DT_CLIENT_SECRET
+    assert env[DINGTALK_ROBOT_CODE_ENV] == DT_ROBOT_CODE
+    assert API_ID_ENV not in env
+    assert API_HASH_ENV not in env
+
+
+def test_build_channel_env_defaults_the_dingtalk_robot_code_to_the_client_id():
+    env = build_channel_env(
+        state_file=EXTRA_STATE,
+        scheduled_tasks_db=EXTRA_DB,
+        allow_path_inputs=False,
+        agent_name="dt",
+        channel="dingtalk",
+        dingtalk_client_id=DT_CLIENT_ID,
+        dingtalk_client_secret=DT_CLIENT_SECRET,
+    )
+
+    assert env[DINGTALK_ROBOT_CODE_ENV] == DT_CLIENT_ID
+
+
+def test_build_mcp_servers_uses_the_dingtalk_server():
+    servers = build_mcp_servers(
+        state_file=EXTRA_STATE,
+        scheduled_tasks_db=EXTRA_DB,
+        allow_path_inputs=False,
+        agent_name="dt",
+        channel="dingtalk",
+        dingtalk_client_id=DT_CLIENT_ID,
+        dingtalk_client_secret=DT_CLIENT_SECRET,
+        dingtalk_robot_code=DT_ROBOT_CODE,
+    )
+
+    assert len(servers) == 1
+    server = servers[0]
+    assert isinstance(server, McpServerStdio)
+    assert server.name == "dingtalk-channel"
+    assert server.args == ["-m", "acp_chat_bot.mcp.server_dingtalk"]
+    assert {item.name: item.value for item in server.env} == build_channel_env(
+        state_file=EXTRA_STATE,
+        scheduled_tasks_db=EXTRA_DB,
+        allow_path_inputs=False,
+        agent_name="dt",
+        channel="dingtalk",
+        dingtalk_client_id=DT_CLIENT_ID,
+        dingtalk_client_secret=DT_CLIENT_SECRET,
+        dingtalk_robot_code=DT_ROBOT_CODE,
+    )
+
+
+def test_build_bot_instance_builds_a_dingtalk_runtime(tmp_path: Path):
+    stop_event = asyncio.Event()
+    spec = dingtalk_spec(
+        name="dt",
+        channel_state_file=tmp_path / "state.json",
+        scheduled_tasks_db=tmp_path / "tasks.sqlite3",
+    )
+
+    instance = build_bot_instance(spec, stop_event=stop_event)
+
+    assert isinstance(instance.config, DingTalkConfig)
+    assert instance.config.client_id == DT_CLIENT_ID
+    assert instance.config.client_secret == DT_CLIENT_SECRET
+    assert instance.config.robot_code == DT_ROBOT_CODE
+    assert instance.config.allowed_staff_ids == frozenset({"staff-1"})
+    assert isinstance(instance.bridge, AgentChatBridge)
+    assert isinstance(instance.runtime, DingTalkRuntime)
+    assert instance.runtime.bridge is instance.bridge
+    assert isinstance(instance.runtime.channel, DingTalkChannel)
+    assert instance.runtime.channel is instance.bridge.channel
+    assert instance.service._channel_state_file == tmp_path / "state.json"
+    assert instance.store.path == tmp_path / "tasks.sqlite3"
+    assert instance.stop_event is stop_event
+    assert instance.service._spawn_env == build_channel_env(
+        state_file=tmp_path / "state.json",
+        scheduled_tasks_db=tmp_path / "tasks.sqlite3",
+        allow_path_inputs=False,
+        agent_name="dt",
+        channel="dingtalk",
+        dingtalk_client_id=DT_CLIENT_ID,
+        dingtalk_client_secret=DT_CLIENT_SECRET,
+        dingtalk_robot_code=DT_ROBOT_CODE,
+    )
+    assert isinstance(instance.runtime._api, DingTalkAPI)

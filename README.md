@@ -1,14 +1,14 @@
-# Telegram ACP bot
+# ACP chat bot
 
 [![CI](https://github.com/mgaitan/telegram-acp-bot/actions/workflows/ci.yml/badge.svg)](https://github.com/mgaitan/telegram-acp-bot/actions/workflows/ci.yml)
 [![docs](https://img.shields.io/badge/docs-blue.svg?style=flat)](https://mgaitan.github.io/telegram-acp-bot/)
-[![PyPI version](https://img.shields.io/pypi/v/telegram-acp-bot?logo=pypi&logoColor=white)](https://pypi.org/project/telegram-acp-bot/)
+[![PyPI version](https://img.shields.io/pypi/v/acp-chat-bot?logo=pypi&logoColor=white)](https://pypi.org/project/acp-chat-bot/)
 [![Changelog](https://img.shields.io/github/v/release/mgaitan/telegram-acp-bot?include_prereleases&label=changelog)](https://github.com/mgaitan/telegram-acp-bot/releases)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/mgaitan/telegram-acp-bot/actions/workflows/ci.yml)
 [![ty](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ty/main/assets/badge/v0.json)](https://github.com/astral-sh/ty)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/mgaitan/telegram-acp-bot/blob/main/LICENSE)
 
-A Telegram bot that implements the [Agent Client Protocol](https://agentclientprotocol.com/) to interact with AI agents.
+A chat bot that implements the [Agent Client Protocol](https://agentclientprotocol.com/) to interact with AI agents over **Telegram** or **DingTalk**. Each agent runs one channel, and one process can host several agents on different channels.
 
 Project documentation: <https://mgaitan.github.io/telegram-acp-bot/>
 
@@ -22,12 +22,14 @@ Some of the most useful capabilities are documented here:
 
 - Reply with attachments:
   https://mgaitan.github.io/telegram-acp-bot/mcp.html#mcp-feature-attachments
-- React to messages:
+- React to messages (Telegram):
   https://mgaitan.github.io/telegram-acp-bot/mcp.html#mcp-feature-reactions
 - Scheduled tasks:
   https://mgaitan.github.io/telegram-acp-bot/deferred_followups.html#deferred-followups-ux
 - Queue messages when the agent is busy:
   https://mgaitan.github.io/telegram-acp-bot/how-to.html#how-to-busy-queue
+- Run the same bot on DingTalk:
+  https://mgaitan.github.io/telegram-acp-bot/dingtalk.html
 - Internal MCP tools overview:
   https://mgaitan.github.io/telegram-acp-bot/mcp.html
 
@@ -36,7 +38,7 @@ Some of the most useful capabilities are documented here:
 Run directly without installing via `uvx`:
 
 ```bash
-uvx telegram-acp-bot --help
+uvx --from acp-chat-bot acp-chat-bot --help
 ```
 
 Run the latest development version from git:
@@ -45,24 +47,36 @@ Run the latest development version from git:
 uvx git+https://github.com/mgaitan/telegram-acp-bot --help
 ```
 
-Run the bot with a real ACP agent:
+Run the bot with a real ACP agent on Telegram:
 
 ```bash
-TELEGRAM_BOT_TOKEN=123456:abc \
-ACP_AGENT_COMMAND="npx @zed-industries/codex-acp" \
-uvx telegram-acp-bot
+acp-chat-bot \
+  --telegram-token 123456:abc \
+  --allowed-user-id 123456789 \
+  --agent-command "npx @zed-industries/codex-acp"
+```
+
+Run it on DingTalk instead:
+
+```bash
+acp-chat-bot \
+  --channel dingtalk \
+  --dingtalk-client-id dingxxxxxxxx \
+  --dingtalk-client-secret secret \
+  --allowed-staff-id 0123456789 \
+  --agent-command "npx @zed-industries/codex-acp"
 ```
 
 Current interaction capabilities:
 - `/new [workspace]`, `/resume [N|workspace]`, `/session`, `/cancel`, `/stop`, `/clear`, `/restart [N [workspace]]`
 - `/mode [normal|compact|verbose]` to switch the activity display per chat
 - `/cmds` for tap-to-run buttons of the slash commands the agent advertises, which are then forwarded to it unchanged
-- Interactive permission prompts with inline buttons (`Always`, `This time`, `Deny`)
-- Agent questions asked over ACP elicitation as inline buttons, including multi-select answers and a skip button
+- Interactive permission prompts with inline buttons on Telegram; numbered replies on DingTalk
+- Agent questions asked over ACP elicitation, including multi-select answers and a skip option
 - Plain text prompts
-- Image and document attachments from Telegram messages
+- Image and document attachments from chat messages
 - ACP `file://` resources are sent as attachments when they resolve to files inside the active workspace
-- Agent markdown output (with fallback to plain text when Telegram rejects entities)
+- Agent markdown output (with chunking and a plain-text fallback when a channel rejects the markup)
 
 Message flow:
 - The bot sends activity blocks while the prompt is running.
@@ -79,7 +93,7 @@ For development, `/restart` stops polling and relaunches the process.
 If `ACP_RESTART_COMMAND` (or `--restart-command`) is configured, that command is used (recommended when running with `uv run ...` and extra flags).
 Otherwise, it falls back to re-execing the current process (`sys.executable + sys.argv`).
 
-## Telegram Bot Token
+## Telegram bot token
 
 Create your token with [@BotFather](https://t.me/BotFather):
 
@@ -87,41 +101,53 @@ Create your token with [@BotFather](https://t.me/BotFather):
 2. Choose a bot name and username.
 3. Copy the token returned by BotFather.
 
-Store the token in your local `.env` file (gitignored):
+Keep the token and the allowlist in a JSON config file (gitignored, `chmod 600`):
 
-At least one allowlist entry is required (`TELEGRAM_ALLOWED_USER_IDS` or `TELEGRAM_ALLOWED_USERNAMES`).
-
-```env
-TELEGRAM_BOT_TOKEN=123456:abc
-TELEGRAM_ALLOWED_USER_IDS=123456789
-# TELEGRAM_ALLOWED_USERNAMES=alice,@bob
-ACP_AGENT_COMMAND="npx @zed-industries/codex-acp"
-ACP_RESTART_COMMAND="uv run telegram-acp-bot --telegram-token <TOKEN> --agent-command \"npx @zed-industries/codex-acp\""
-ACP_PERMISSION_MODE=ask
-ACP_PERMISSION_EVENT_OUTPUT=stdout
-ACP_STDIO_LIMIT=8388608
+```json
+{
+  "channel": "telegram",
+  "telegram": {
+    "bot_token": "123456:abc",
+    "allowed_user_ids": [123456789]
+  },
+  "acp": {
+    "agent_command": "npx @zed-industries/codex-acp"
+  }
+}
 ```
 
-## Agent Command
+Then run:
 
-Set `ACP_AGENT_COMMAND` to the ACP-compatible agent command you want the bot to run.
+```bash
+acp-chat-bot --config ./acp-chat-bot.json
+```
+
+At least one Telegram allowlist entry (`allowed_user_ids` or `allowed_usernames`) is required.
+For DingTalk, set `"channel": "dingtalk"` and configure `dingtalk.client_id`,
+`dingtalk.client_secret` and an `allowed_staff_ids`/`allowed_nicknames` entry; see
+[docs/dingtalk.md](docs/dingtalk.md).
+
+## Agent command
+
+Set `acp.agent_command` (or `--agent-command`) to the ACP-compatible agent command you want the
+bot to run.
 
 Example:
 
-```env
-ACP_AGENT_COMMAND="npx @zed-industries/codex-acp"
+```json
+{ "acp": { "agent_command": "npx @zed-industries/codex-acp" } }
 ```
 
 To install the tool permanently:
 
 ```bash
-uv tool install telegram-acp-bot
+uv tool install acp-chat-bot
 ```
 
 ## Development
 
 - Install dependencies with `uv sync`.
-- Then run `uv run telegram-acp-bot`
+- Then run `uv run acp-chat-bot`
 - New dependency releases are delayed by one week via `uv` cooldown (`[tool.uv].exclude-newer = "1 week"`), with per-package overrides when required (for example, `ty`).
 - Run the QA bundle with [`ty`](https://github.com/astral-sh/ty):
 

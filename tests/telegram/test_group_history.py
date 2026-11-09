@@ -6,10 +6,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from telegram_acp_bot.acp.echo_service import EchoAgentService
-from telegram_acp_bot.core.session_registry import SessionRegistry
-from telegram_acp_bot.telegram.bridge import TelegramBridge
-from telegram_acp_bot.telegram.config import make_config
+from acp_chat_bot.acp.echo_service import EchoAgentService
+from acp_chat_bot.channels.telegram.bridge import TelegramBridge
+from acp_chat_bot.channels.telegram.config import make_config
+from acp_chat_bot.core.session_registry import SessionRegistry
 from tests.telegram.support import make_context, make_update
 
 pytestmark = pytest.mark.asyncio

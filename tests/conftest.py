@@ -11,7 +11,7 @@ def isolate_home_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
 
     Prevents `_find_config_file()` from accidentally discovering real config
     files in the developer's home directory, keeping tests hermetic.
-    The CWD-relative candidate (`.telegram_acp_bot/config.json`) is unaffected,
+    The CWD-relative candidate (`.acp_chat_bot/config.json`) is unaffected,
     so tests that exercise auto-discovery can still do so by creating the file
     under their own `tmp_path` and changing into it.
     """

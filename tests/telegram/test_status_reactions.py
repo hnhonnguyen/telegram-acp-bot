@@ -8,9 +8,9 @@ from typing import cast
 
 import pytest
 from telegram.error import TelegramError
-from telegram_acp_bot.mcp.tools.reactions import STANDARD_REACTION_EMOJIS
-from telegram_acp_bot.telegram.config import StatusReactionLevel
-from telegram_acp_bot.telegram.reactions import STATUS_REACTION_EMOJI, PromptStatus, StatusReactionSender
+from acp_chat_bot.mcp.tools.reactions import STANDARD_REACTION_EMOJIS
+from acp_chat_bot.channels.telegram.config import StatusReactionLevel
+from acp_chat_bot.channels.telegram.reactions import STATUS_REACTION_EMOJI, PromptStatus, StatusReactionSender
 from tests.telegram.support import *
 
 BUSY_CHAT_LOCK_OWNER_MESSAGE_ID = 11

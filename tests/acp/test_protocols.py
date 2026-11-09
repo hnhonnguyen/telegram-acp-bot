@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import telegram_acp_bot.acp.protocols as protocols_module
+import acp_chat_bot.acp.protocols as protocols_module
 
 
 def test_package_version_uses_installed_distribution(mocker):

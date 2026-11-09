@@ -1,0 +1,148 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Literal
+
+from acp_chat_bot.core.ids import ChatId
+
+ActivityMode = Literal["compact", "normal", "verbose"]
+PermissionMode = Literal["deny", "approve", "ask"]
+PermissionDecisionAction = Literal["once", "always", "deny"]
+PermissionEventOutput = Literal["stdout", "off"]
+ToolCallStatus = Literal["in_progress", "completed", "failed"]
+
+
+@dataclass(slots=True, frozen=True)
+class AgentReply:
+    """Normalized response from the agent layer."""
+
+    text: str
+    activity_blocks: tuple[AgentActivityBlock, ...] = ()
+    images: tuple[ImagePayload, ...] = ()
+    files: tuple[FilePayload, ...] = ()
+
+
+@dataclass(slots=True, frozen=True)
+class AgentActivityBlock:
+    """Captured output for one ACP tool-call segment."""
+
+    kind: str
+    title: str
+    status: ToolCallStatus
+    text: str = ""
+    activity_id: str | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class ImagePayload:
+    """Base64 image payload with mime information."""
+
+    data_base64: str
+    mime_type: str
+
+
+@dataclass(slots=True, frozen=True)
+class FilePayload:
+    """Generic file payload for binary or text resources."""
+
+    name: str
+    mime_type: str | None = None
+    text_content: str | None = None
+    data_base64: str | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class PromptImage:
+    """Image input provided by Telegram user."""
+
+    data_base64: str
+    mime_type: str
+
+
+@dataclass(slots=True, frozen=True)
+class PromptFile:
+    """File input provided by Telegram user."""
+
+    name: str
+    mime_type: str | None = None
+    text_content: str | None = None
+    data_base64: str | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class PermissionPolicy:
+    """Permission policy state for one chat session."""
+
+    session_mode: PermissionMode
+    next_prompt_auto_approve: bool
+
+
+@dataclass(slots=True, frozen=True)
+class PermissionRequest:
+    """A runtime permission request awaiting user confirmation."""
+
+    chat_id: ChatId
+    request_id: str
+    tool_title: str
+    tool_call_id: str
+    available_actions: tuple[PermissionDecisionAction, ...]
+
+
+@dataclass(slots=True, frozen=True)
+class ResumableSession:
+    """Session candidate returned by ACP session listing."""
+
+    session_id: str
+    workspace: Path
+    title: str
+    updated_at: str
+
+
+@dataclass(slots=True, frozen=True)
+class AgentCommand:
+    """Slash command an agent advertised over ACP."""
+
+    name: str
+    description: str
+    hint: str = ""
+
+
+@dataclass(slots=True, frozen=True)
+class ElicitationOption:
+    """One answer an elicitation offers: the value to send back and the label to show."""
+
+    value: str
+    label: str
+
+
+@dataclass(slots=True, frozen=True)
+class ElicitationQuestion:
+    """One form field the agent wants answered, flattened to a choice between known options."""
+
+    field: str
+    prompt: str
+    options: tuple[ElicitationOption, ...]
+    multiple: bool = False
+
+
+@dataclass(slots=True, frozen=True)
+class ElicitationRequest:
+    """A form elicitation awaiting the user's taps."""
+
+    chat_id: ChatId
+    request_id: str
+    title: str
+    questions: tuple[ElicitationQuestion, ...]
+
+
+class AgentOutputLimitExceededError(RuntimeError):
+    """Raised when the agent emits a stdio line larger than the configured reader limit."""
+
+
+class AgentConnectionLostError(RuntimeError):
+    """Raised when the agent died and the bot could not bring a session back for this chat.
+
+    See also `{py:meth}`acp_chat_bot.acp.service.AcpAgentService.prompt`, which recovers
+    from a dead agent and only raises this when recovery itself failed.
+    """

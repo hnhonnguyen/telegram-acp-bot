@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from telegram_acp_bot.scheduled_tasks import ScheduledTaskStore
-from telegram_acp_bot.telegram.bridge import TelegramBridge
-from telegram_acp_bot.telegram.constants import SCHEDULED_KEYBOARD_MAX_ROWS
+from acp_chat_bot.scheduled_tasks import ScheduledTaskStore
+from acp_chat_bot.channels.telegram.bridge import TelegramBridge
+from acp_chat_bot.channels.telegram.constants import SCHEDULED_KEYBOARD_MAX_ROWS
 from tests.telegram.support import *
 
 
@@ -493,11 +493,11 @@ async def test_format_activity_block_read_escapes_markdown_and_removes_read_pref
 
 
 async def test_format_activity_block_edit_uses_absolute_path_and_removes_edit_prefix():
-    block = AgentActivityBlock(kind="edit", title="Edit src/telegram_acp_bot/telegram/bot.py", status="completed")
+    block = AgentActivityBlock(kind="edit", title="Edit src/acp_chat_bot/telegram/bot.py", status="completed")
     rendered = TelegramBridge._format_activity_block(block, workspace=Path("/tmp/ws"))
     assert "*✏️ Editing*" in rendered
-    assert "`/tmp/ws/src/telegram_acp_bot/telegram/bot.py`" in rendered
-    assert "\n\nEdit /tmp/ws/src/telegram_acp_bot/telegram/bot.py" not in rendered
+    assert "`/tmp/ws/src/acp_chat_bot/telegram/bot.py`" in rendered
+    assert "\n\nEdit /tmp/ws/src/acp_chat_bot/telegram/bot.py" not in rendered
 
 
 async def test_format_activity_block_read_without_workspace_keeps_relative_path():

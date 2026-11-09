@@ -2,8 +2,8 @@ from __future__ import annotations
 
 # ruff: noqa: F403, F405, I001
 
-from telegram_acp_bot.telegram.bridge import TelegramBridge
-from telegram_acp_bot.telegram.constants import GROUP_BOT_TURN_BUDGET, GROUP_BUDGET_HOLD_TEXT
+from acp_chat_bot.channels.telegram.bridge import TelegramBridge
+from acp_chat_bot.channels.telegram.constants import GROUP_BOT_TURN_BUDGET, GROUP_BUDGET_HOLD_TEXT
 from tests.telegram.support import *
 
 EXPECTED_ECHO_SUFFIX = "alo"

@@ -1,6 +1,12 @@
 # MCP Integration
 
-This project includes a built-in MCP server that the bot advertises automatically to the ACP agent. The practical reason for having it is simple: some things belong to the Telegram channel itself, not to the ACP conversation protocol.
+This project includes a built-in MCP server that the bot advertises automatically to the ACP agent. The practical reason for having it is simple: some things belong to the chat channel itself, not to the ACP conversation protocol.
+
+```{note}
+This chapter documents the **Telegram** server (`telegram-channel`). DingTalk agents receive a
+smaller `dingtalk-channel` server with attachment, history and scheduling tools; see
+{doc}`dingtalk`.
+```
 
 That becomes visible in requests such as these:
 
@@ -16,10 +22,12 @@ In all of those cases, the agent needs a channel-side capability. It may need to
 If you run:
 
 ```bash
-uv run telegram-acp-bot
+uv run acp-chat-bot
 ```
 
-every new or resumed ACP session receives an MCP stdio server named `telegram-channel`. In practice, this is how the agent performs Telegram-specific side effects without extending ACP itself.
+every new or resumed ACP session receives an MCP stdio server named `telegram-channel` (or
+`dingtalk-channel` on DingTalk). In practice, this is how the agent performs channel-specific
+side effects without extending ACP itself.
 
 ACP remains responsible for the conversational session with the agent. MCP is the place for actions that belong to the Telegram channel. That split is the main design idea. It keeps the ACP side protocol-native while still giving the agent a clean way to interact with Telegram.
 
@@ -61,10 +69,10 @@ The point of the relative delay inputs is that the agent does not need to comput
 
 ## How It Is Implemented
 
-The implementation lives under `telegram_acp_bot.mcp`, and the built-in server entrypoint is:
+The implementation lives under `acp_chat_bot.mcp`, and the built-in server entrypoint is:
 
 ```bash
-python -m telegram_acp_bot.mcp.server
+python -m acp_chat_bot.mcp.server
 ```
 
 The easiest way to think about the MCP layer is as a small local service that translates an ACP-side tool call into a Telegram-side action.

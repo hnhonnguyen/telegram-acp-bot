@@ -7,10 +7,10 @@ from pathlib import Path
 
 import pytest
 
-from telegram_acp_bot.agent_config import agent_tokens, resolve_specs
-from telegram_acp_bot.config_file import ConfigFileError
-from telegram_acp_bot.instance import BotInstanceSpec
-from telegram_acp_bot.mcp.state import MAX_GROUP_HISTORY_PER_CHAT
+from acp_chat_bot.agent_config import agent_tokens, resolve_specs
+from acp_chat_bot.config_file import ConfigFileError
+from acp_chat_bot.instance import BotInstanceSpec
+from acp_chat_bot.mcp.state import MAX_GROUP_HISTORY_PER_CHAT
 
 QODER_TOKEN = "111:qoder"
 CLAUDE_TOKEN = "222:claude"
@@ -199,7 +199,7 @@ def test_agent_token_falls_back_to_the_base_token():
 
 
 def test_two_agents_cannot_share_one_token():
-    with pytest.raises(ConfigFileError, match="agents 'qoder' and 'claude' share one bot token"):
+    with pytest.raises(ConfigFileError, match="agents 'qoder' and 'claude' share one telegram identity"):
         resolve(agents={"qoder": {}, "claude": {}})
 
 
@@ -361,3 +361,119 @@ def test_declared_agents_are_paired_with_their_own_tokens():
         ("qoder", QODER_TOKEN),
         ("claude", "0:base"),
     ]
+
+
+# DingTalk channel tests
+
+DT_CLIENT_ID = "dt-client-id"
+DT_CLIENT_SECRET = "dt-client-secret"
+DT_ROBOT_CODE = "dt-robot-code"
+AGENT_GROUP_HISTORY = 5
+
+
+def dingtalk_spec(**overrides: object) -> BotInstanceSpec:
+    """A base spec already running on DingTalk, which named agents inherit."""
+    return base_spec(
+        channel="dingtalk",
+        token="",
+        allowed_user_ids=(),
+        allowed_usernames=(),
+        dingtalk_client_id=DT_CLIENT_ID,
+        dingtalk_client_secret=DT_CLIENT_SECRET,
+        dingtalk_robot_code=DT_ROBOT_CODE,
+        allowed_staff_ids=("staff-1",),
+        allowed_dingtalk_nicknames=("alice",),
+        group_require_mention=True,
+        status_reactions="off",
+        mtproto_api_id=None,
+        mtproto_api_hash="",
+        **overrides,
+    )
+
+
+def test_a_dingtalk_agent_inherits_the_base_identity():
+    (spec,) = resolve(base=dingtalk_spec(), agents={"dt": {}})
+
+    assert spec.channel == "dingtalk"
+    assert spec.token == ""
+    assert spec.dingtalk_client_id == DT_CLIENT_ID
+    assert spec.dingtalk_client_secret == DT_CLIENT_SECRET
+    assert spec.dingtalk_robot_code == DT_ROBOT_CODE
+    assert spec.allowed_staff_ids == ("staff-1",)
+    assert spec.allowed_dingtalk_nicknames == ("alice",)
+    assert spec.group_require_mention is True
+    assert spec.group_media_queue is False
+    assert spec.status_reactions == "off"
+    assert spec.mtproto_api_id is None
+    assert spec.mtproto_api_hash == ""
+
+
+def test_a_telegram_flagship_can_declare_a_dingtalk_agent():
+    agent = {
+        "channel": "dingtalk",
+        "dingtalk": {
+            "client_id": "agent-id",
+            "client_secret": "agent-secret",
+            "robot_code": "agent-robot",
+            "allowed_staff_ids": ["7"],
+            "allowed_nicknames": ["Bob"],
+            "group_require_mention": False,
+            "group_history_size": 5,
+            "schedule_languages": ["EN"],
+        },
+    }
+
+    (spec,) = resolve(agents={"dt": agent})
+
+    assert spec.channel == "dingtalk"
+    assert spec.dingtalk_client_id == "agent-id"
+    assert spec.dingtalk_client_secret == "agent-secret"
+    assert spec.dingtalk_robot_code == "agent-robot"
+    assert spec.allowed_staff_ids == ("7",)
+    assert spec.allowed_dingtalk_nicknames == ("Bob",)
+    assert spec.group_require_mention is False
+    assert spec.group_history_size == AGENT_GROUP_HISTORY
+    assert spec.schedule_languages == ("en",)
+    assert spec.status_reactions == "off"
+    assert spec.group_media_queue is False
+
+
+def test_a_dingtalk_agent_falls_back_to_the_client_id_as_robot_code():
+    agent = {
+        "channel": "dingtalk",
+        "dingtalk": {"client_id": "id", "client_secret": "secret", "allowed_staff_ids": ["7"]},
+    }
+
+    (spec,) = resolve(agents={"dt": agent})
+
+    assert spec.dingtalk_robot_code == "id"
+
+
+def test_a_dingtalk_agent_without_an_allowlist_is_rejected():
+    agent = {"channel": "dingtalk", "dingtalk": {"client_id": "id", "client_secret": "secret"}}
+
+    with pytest.raises(ConfigFileError, match=r"needs dingtalk\.allowed_staff_ids"):
+        resolve(agents={"dt": agent})
+
+
+def test_a_dingtalk_agent_without_credentials_is_rejected():
+    agent = {"channel": "dingtalk", "dingtalk": {"allowed_staff_ids": ["7"]}}
+
+    with pytest.raises(ConfigFileError, match=r"needs dingtalk\.client_id and dingtalk\.client_secret"):
+        resolve(agents={"dt": agent})
+
+
+def test_an_unknown_agent_channel_is_rejected():
+    with pytest.raises(ConfigFileError, match="agent 'qoder' has an unknown channel 'matrix'"):
+        resolve(agents={"qoder": {"channel": "matrix"}})
+
+
+def test_two_dingtalk_agents_cannot_share_a_client_id():
+    with pytest.raises(ConfigFileError, match="share one dingtalk identity"):
+        resolve(base=dingtalk_spec(), agents={"qoder": {}, "claude": {}})
+
+
+def test_agents_without_a_channel_identity_do_not_collide():
+    specs = resolve(base=base_spec(token=""), agents={"qoder": {}, "claude": {}})
+
+    assert [spec.token for spec in specs] == ["", ""]

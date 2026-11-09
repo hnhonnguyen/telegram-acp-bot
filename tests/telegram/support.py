@@ -13,8 +13,8 @@ from telegram.error import BadRequest, TelegramError
 from telegram.ext import AIORateLimiter, Application
 from telegramify_markdown import convert as render_markdown
 
-from telegram_acp_bot.acp.echo_service import EchoAgentService
-from telegram_acp_bot.acp.models import (
+from acp_chat_bot.acp.echo_service import EchoAgentService
+from acp_chat_bot.acp.models import (
     ActivityMode,
     AgentActivityBlock,
     AgentCommand,
@@ -27,13 +27,11 @@ from telegram_acp_bot.acp.models import (
     PromptImage,
     ResumableSession,
 )
-from telegram_acp_bot.core.session_registry import SessionRegistry
-from telegram_acp_bot.logging_context import LOG_TEXT_PREVIEW_MAX_CHARS, log_text_preview
-from telegram_acp_bot.telegram import activity as activity_module
-from telegram_acp_bot.telegram import app as app_module
-from telegram_acp_bot.telegram import bot as bot_module
-from telegram_acp_bot.telegram import bridge as bridge_module
-from telegram_acp_bot.telegram.bot import (
+from acp_chat_bot.channels.telegram import activity as activity_module
+from acp_chat_bot.channels.telegram import app as app_module
+from acp_chat_bot.channels.telegram import bot as bot_module
+from acp_chat_bot.channels.telegram import bridge as bridge_module
+from acp_chat_bot.channels.telegram.bot import (
     BUSY_CALLBACK_PREFIX,
     BUSY_SENT_TEXT,
     BUSY_STILL_QUEUED_TEXT,
@@ -49,6 +47,8 @@ from telegram_acp_bot.telegram.bot import (
     start_application,
     stop_application,
 )
+from acp_chat_bot.core.session_registry import SessionRegistry
+from acp_chat_bot.logging_context import LOG_TEXT_PREVIEW_MAX_CHARS, log_text_preview
 
 pytestmark = pytest.mark.asyncio
 

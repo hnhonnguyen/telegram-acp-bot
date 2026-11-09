@@ -1,8 +1,8 @@
-"""Entry-point module, in case you use `python -m pp3`."""
+"""Run the deprecated package alias as a module."""
 
-import sys
+from __future__ import annotations
 
-from telegram_acp_bot import main
+from acp_chat_bot.__main__ import main
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    raise SystemExit(main())

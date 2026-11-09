@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from telegram_acp_bot.agent_identity import (
+from acp_chat_bot.agent_identity import (
     AGENT_NAME_ERROR,
     DEFAULT_AGENT_NAME,
     agent_state_dir,

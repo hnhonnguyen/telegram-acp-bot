@@ -479,7 +479,7 @@ async def test_update_scheduled_task_reports_lost_race(scheduling_env: tuple[Pat
         run_at=datetime.now(UTC) + timedelta(minutes=5),
     )
     mocker.patch.object(store, "update_task", return_value=None)
-    mocker.patch("telegram_acp_bot.mcp.tools.scheduling.load_scheduled_task_store", return_value=store)
+    mocker.patch("acp_chat_bot.mcp.tools.scheduling.load_scheduled_task_store", return_value=store)
 
     result = await mcp_channel.update_scheduled_task(task.id, notify_text="New")
 
@@ -589,7 +589,7 @@ async def test_cancel_scheduled_task_reports_lost_race(scheduling_env: tuple[Pat
         run_at=datetime.now(UTC) + timedelta(minutes=5),
     )
     mocker.patch.object(store, "cancel_task", return_value=False)
-    mocker.patch("telegram_acp_bot.mcp.tools.scheduling.load_scheduled_task_store", return_value=store)
+    mocker.patch("acp_chat_bot.mcp.tools.scheduling.load_scheduled_task_store", return_value=store)
 
     result = await mcp_channel.cancel_scheduled_task(task.id)
 

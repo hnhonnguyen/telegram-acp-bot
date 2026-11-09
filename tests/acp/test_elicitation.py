@@ -20,8 +20,8 @@ from acp.schema import (
     TitledMultiSelectItems,
 )
 from telegram.error import NetworkError
-from telegram_acp_bot.acp.elicitation import elicitation_content, elicitation_form, elicitation_questions
-from telegram_acp_bot.acp.models import ElicitationRequest
+from acp_chat_bot.acp.elicitation import elicitation_content, elicitation_form, elicitation_questions
+from acp_chat_bot.acp.models import ElicitationRequest
 from tests.acp.support import *
 
 REPORT_FORMAT_OPTIONS = (("category", "Theo danh mục"), ("month", "Theo tháng"))

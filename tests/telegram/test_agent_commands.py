@@ -5,8 +5,8 @@ from __future__ import annotations
 import base64
 
 from telegram import InlineKeyboardButton, Message
-from telegram_acp_bot.telegram import bridge as bridge_module
-from telegram_acp_bot.telegram.constants import (
+from acp_chat_bot.channels.telegram import bridge as bridge_module
+from acp_chat_bot.channels.telegram.constants import (
     AGENT_COMMAND_KEYBOARD_COLUMNS,
     AGENT_COMMAND_KEYBOARD_INFO_CALLBACK_DATA,
     AGENT_COMMAND_KEYBOARD_INFO_LABEL,

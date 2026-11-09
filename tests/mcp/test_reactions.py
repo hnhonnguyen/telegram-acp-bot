@@ -22,7 +22,7 @@ async def test_set_message_reaction_with_explicit_message_id(tmp_path, monkeypat
     monkeypatch.setenv(TOKEN_ENV, "TOKEN")
     monkeypatch.setenv(STATE_FILE_ENV, str(state_file))
     bot = mocker.AsyncMock()
-    mocker.patch("telegram_acp_bot.mcp.tools.reactions.Bot", return_value=bot)
+    mocker.patch("acp_chat_bot.mcp.tools.reactions.Bot", return_value=bot)
 
     result = await mcp_channel.telegram_set_message_reaction(session_id="s1", message_id=42, emoji="👍", is_big=True)
 
@@ -49,7 +49,7 @@ async def test_set_message_reaction_normalizes_heart_variant(tmp_path, monkeypat
     monkeypatch.setenv(TOKEN_ENV, "TOKEN")
     monkeypatch.setenv(STATE_FILE_ENV, str(state_file))
     bot = mocker.AsyncMock()
-    mocker.patch("telegram_acp_bot.mcp.tools.reactions.Bot", return_value=bot)
+    mocker.patch("acp_chat_bot.mcp.tools.reactions.Bot", return_value=bot)
 
     result = await mcp_channel.telegram_set_message_reaction(session_id="s1", message_id=42, emoji="❤️")
 
@@ -71,7 +71,7 @@ async def test_set_message_reaction_uses_active_prompt_message_id(tmp_path, monk
     monkeypatch.setenv(TOKEN_ENV, "TOKEN")
     monkeypatch.setenv(STATE_FILE_ENV, str(state_file))
     bot = mocker.AsyncMock()
-    mocker.patch("telegram_acp_bot.mcp.tools.reactions.Bot", return_value=bot)
+    mocker.patch("acp_chat_bot.mcp.tools.reactions.Bot", return_value=bot)
 
     result = await mcp_channel.telegram_set_message_reaction(session_id="s1", emoji="🎉")
 

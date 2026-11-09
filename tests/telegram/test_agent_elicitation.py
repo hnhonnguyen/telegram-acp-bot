@@ -6,8 +6,8 @@ from collections.abc import Awaitable, Callable, Mapping
 
 from telegram import InlineKeyboardButton, MessageEntity
 from telegram.error import BadRequest
-from telegram_acp_bot.acp.models import ElicitationOption, ElicitationQuestion, ElicitationRequest
-from telegram_acp_bot.telegram.constants import (
+from acp_chat_bot.acp.models import ElicitationOption, ElicitationQuestion, ElicitationRequest
+from acp_chat_bot.channels.telegram.constants import (
     ELICITATION_ANSWER_RECORD_PREFIX,
     ELICITATION_CALLBACK_PREFIX,
     ELICITATION_FORMS_MAX,
