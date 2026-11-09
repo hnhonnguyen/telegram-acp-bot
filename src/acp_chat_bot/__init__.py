@@ -32,7 +32,7 @@ from acp_chat_bot.scheduled_tasks import default_scheduled_tasks_db_path
 
 def get_version() -> str:
     try:
-        return metadata.version("telegram-acp-bot")
+        return metadata.version("acp-chat-bot")
     except metadata.PackageNotFoundError:
         return "unknown"
 

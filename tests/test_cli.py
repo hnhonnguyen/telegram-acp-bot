@@ -214,6 +214,13 @@ def test_get_version_package_not_found(mocker):
     assert get_version() == "unknown"
 
 
+def test_get_version_reads_the_renamed_distribution(mocker):
+    version = mocker.patch("importlib.metadata.version", return_value="1.2.3")
+
+    assert get_version() == "1.2.3"
+    version.assert_called_once_with("acp-chat-bot")
+
+
 def test_main_activity_mode_defaults_to_normal(mocker):
     """Default activity mode is normal."""
     mock_run_bot = mocker.patch("acp_chat_bot.run_bot", return_value=0)
