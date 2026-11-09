@@ -76,6 +76,7 @@ async def _drive_runtime(name: str, runtime: ChannelRuntime, stop_event: asyncio
             logger.exception("Agent %s failed to start; stopping the process", name)
             stop_event.set()
             return False
+        stopped_cleanly = True
         try:
             await stop_event.wait()
         finally:
@@ -83,8 +84,8 @@ async def _drive_runtime(name: str, runtime: ChannelRuntime, stop_event: asyncio
                 await runtime.stop()
             except Exception:
                 logger.exception("Agent %s failed to shut down cleanly", name)
-                return False
-        return True
+                stopped_cleanly = False
+        return stopped_cleanly
 
 
 async def _drive_application(name: str, app: Application, stop_event: asyncio.Event) -> bool:
@@ -96,6 +97,7 @@ async def _drive_application(name: str, app: Application, stop_event: asyncio.Ev
             logger.exception("Agent %s failed to start; stopping the process", name)
             stop_event.set()
             return False
+        stopped_cleanly = True
         try:
             await stop_event.wait()
         finally:
@@ -103,8 +105,8 @@ async def _drive_application(name: str, app: Application, stop_event: asyncio.Ev
                 await stop_application(app)
             except Exception:
                 logger.exception("Agent %s failed to shut down cleanly", name)
-                return False
-        return True
+                stopped_cleanly = False
+        return stopped_cleanly
 
 
 def _install_stop_handlers(stop_event: asyncio.Event) -> tuple[int, ...]:
