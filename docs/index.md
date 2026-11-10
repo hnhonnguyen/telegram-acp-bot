@@ -112,6 +112,8 @@ If you want the quickest tour of what the bot can do, these are good places to s
 - {ref}`how-to-busy-queue` covers queued messages and the **Send now** flow when the agent is already busy.
 - {ref}`how-to-agent-dies` covers what the bot does when the agent process dies mid-answer.
 - {ref}`how-to-two-agents` shows how one process runs several agents, each behind its own Telegram bot.
+- {ref}`usage` is the quick reference for prompts, commands and channel differences.
+- {ref}`how-to-systemd` runs the bot as a systemd user service.
 - {doc}`mcp` gives the broader picture of the internal MCP tools that power those features.
 
 ```{toctree}
@@ -119,6 +121,7 @@ If you want the quickest tour of what the bot can do, these are good places to s
 :caption: Documentation
 
 how-to.md
+usage.md
 dingtalk.md
 deferred_followups.md
 agents.md

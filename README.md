@@ -20,6 +20,8 @@ This project is in **alpha** and under active development. Development has inclu
 
 Some of the most useful capabilities are documented here:
 
+- Usage guide: prompts, commands and channel differences:
+  https://mgaitan.github.io/telegram-acp-bot/usage.html
 - Reply with attachments:
   https://mgaitan.github.io/telegram-acp-bot/mcp.html#mcp-feature-attachments
 - React to messages (Telegram):
@@ -143,6 +145,10 @@ To install the tool permanently:
 ```bash
 uv tool install acp-chat-bot
 ```
+
+To keep it running in the background, start with the systemd user service in
+[`deploy/acp-chat-bot.service`](deploy/acp-chat-bot.service); the
+[how-to guide](docs/how-to.md#run-the-bot-as-a-systemd-user-service) walks through the setup.
 
 ## Development
 

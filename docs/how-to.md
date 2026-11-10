@@ -515,6 +515,46 @@ triggered it, so treating the quote as an address would keep two bots alive on b
 "⏳ Agent is busy" notice replying to a peer's message, which the peer answers, which queues again — with
 neither ever naming the other.
 
+(how-to-systemd)=
+## 16. Run the bot as a systemd user service
+
+Install the tool first, then let systemd keep it running without a terminal:
+
+```bash
+uv tool install acp-chat-bot
+mkdir -p ~/.config/systemd/user ~/.local/state/acp-chat-bot
+cp deploy/acp-chat-bot.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now acp-chat-bot.service
+```
+
+The template uses `%h` for your home directory, so it needs no editing when the CLI is in
+`~/.local/bin` and the config in `~/.config/acp_chat_bot/config.json`:
+
+```{literalinclude} ../deploy/acp-chat-bot.service
+:language: ini
+```
+
+Change `WorkingDirectory` to the project the agent should see, and `Environment=PATH` when the
+agent command is installed somewhere else. The service restarts on failure, and its output is
+appended to `~/.local/state/acp-chat-bot/bot.log`:
+
+```bash
+systemctl --user status acp-chat-bot.service
+journalctl --user -u acp-chat-bot.service -f
+tail -f ~/.local/state/acp-chat-bot/bot.log
+```
+
+A user service starts with your login session. To keep it running after you log out, for
+example on a headless machine, enable lingering once:
+
+```bash
+loginctl enable-linger "$USER"
+```
+
+Both channels use the same unit: choose the channel in the config file or pass `--channel` in
+`ExecStart`. Secrets stay in the config file, so keep it `chmod 600`; the unit holds none.
+
 ## Notes
 
 - Session scope is per Telegram chat.

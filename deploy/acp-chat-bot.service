@@ -1,0 +1,25 @@
+[Unit]
+Description=ACP chat bot
+# A broken config should not silently give up after the default burst limit.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+# The agent inherits this directory, so set it to the project the agent should see.
+WorkingDirectory=%h
+# systemd user services start with a minimal PATH. Put the directory holding the
+# agent command (qodercli, npx, ...) first if it is not one of the defaults below.
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PYTHONUNBUFFERED=1
+# Quote paths: systemd splits ExecStart on whitespace.
+ExecStart=%h/.local/bin/acp-chat-bot --config %h/.config/acp_chat_bot/config.json
+Restart=always
+RestartSec=3
+# Create %h/.local/state/acp-chat-bot/ before starting the unit; systemd does not
+# create the parent directory of an append: target.
+StandardOutput=append:%h/.local/state/acp-chat-bot/bot.log
+StandardError=append:%h/.local/state/acp-chat-bot/bot.log
+SyslogIdentifier=acp-chat-bot
+
+[Install]
+WantedBy=default.target
