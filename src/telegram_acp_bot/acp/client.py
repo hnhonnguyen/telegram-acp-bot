@@ -67,13 +67,11 @@ def _is_hook_tool_call(*, kind: str, title: str) -> bool:
     Agents surface lifecycle hooks as ordinary tool calls — Devin titles them
     `Ran hook: <script> (<event>)`, others may tag `kind="hook"`. Their raw
     output is plumbing, not user-facing progress, so it is hidden from chat.
+    Hook executions arrive already completed and emit no further updates, so
+    they must never open an activity block: any message chunks streamed while
+    one stayed open would be captured as tool output and vanish from the reply.
     """
     return kind == "hook" or title.startswith(_HOOK_TOOL_TITLE_PREFIX)
-
-
-def _is_hook_block(block: AgentActivityBlock) -> bool:
-    """Whether the activity block reports an agent hook run. See `{py:func}`_is_hook_tool_call`."""
-    return _is_hook_tool_call(kind=block.kind, title=block.title)
 
 
 def _agent_command(command: AvailableCommand) -> AgentCommand:
@@ -157,6 +155,8 @@ class _AcpClient:
         if isinstance(update, ToolCallStart):
             label = update.kind or "other"
             self._report_event(session_id, f"tool start {update.tool_call_id} {update.title} ({label})")
+            if _is_hook_tool_call(kind=label, title=update.title or ""):
+                return
             await self._flush_pending_non_tool_text(session_id=session_id)
             await self._open_tool_block(
                 session_id=session_id,
@@ -359,10 +359,6 @@ class _AcpClient:
         if active_block is None:
             return
 
-        if _is_hook_tool_call(kind=active_block.kind, title=active_block.title):
-            self._active_tool_blocks[session_id] = None
-            return
-
         normalized_status = status if status in TERMINAL_TOOL_STATUSES else "in_progress"
         block_text = "".join(active_block.chunks).strip()
         if is_prompt_end and active_block.kind != "think" and block_text:
@@ -386,8 +382,6 @@ class _AcpClient:
 
     async def _emit_activity_block(self, *, session_id: str, block: AgentActivityBlock) -> None:
         if self._activity_reporter is None:
-            return
-        if _is_hook_block(block):
             return
         await self._activity_reporter(session_id, block)
 

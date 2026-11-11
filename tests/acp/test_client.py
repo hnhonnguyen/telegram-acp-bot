@@ -758,34 +758,35 @@ async def test_acp_client_hook_tool_calls_are_hidden_from_chat_activity():
     session_id = "s-hook"
     client.start_capture(session_id)
 
+    # Agents report hook executions as already-completed tool calls whose stdout
+    # rides in field_meta, not in streamed chunks (e.g. Devin's `Ran hook:` calls).
     await client.session_update(
         session_id=session_id,
         update=ToolCallStart(
             title="Ran hook: /opt/hooks/patina-prompt-submit.sh (user_prompt)",
             tool_call_id="hook-1",
             kind="other",
-            session_update="tool_call",
-        ),
-    )
-    await client.session_update(
-        session_id=session_id,
-        update=AgentMessageChunk(
-            content=text_block('{"hookSpecificOutput": {"additionalContext": "noise"}}'),
-            session_update="agent_message_chunk",
-        ),
-    )
-    await client.session_update(
-        session_id=session_id,
-        update=ToolCallProgress(
-            tool_call_id="hook-1",
-            title="Ran hook: /opt/hooks/patina-prompt-submit.sh (user_prompt)",
             status="completed",
-            session_update="tool_call_update",
+            session_update="tool_call",
+            field_meta={
+                "cognition.ai/eventType": "hook_execution",
+                "cognition.ai/output": '{"hookSpecificOutput": {"additionalContext": "noise"}}',
+            },
         ),
     )
     await client.session_update(
         session_id=session_id,
         update=AgentMessageChunk(content=text_block("done"), session_update="agent_message_chunk"),
+    )
+    await client.session_update(
+        session_id=session_id,
+        update=ToolCallStart(
+            title="Ran hook: /opt/hooks/patina-stop.sh (stop)",
+            tool_call_id="hook-2",
+            status="completed",
+            session_update="tool_call",
+            field_meta={"cognition.ai/eventType": "hook_execution", "cognition.ai/output": "{}"},
+        ),
     )
 
     reply = await client.finish_capture(session_id)
@@ -794,3 +795,70 @@ async def test_acp_client_hook_tool_calls_are_hidden_from_chat_activity():
     assert all(not block.title.startswith("Ran hook") for block in reply.activity_blocks)
     assert "hookSpecificOutput" not in reply.text
     assert "done" in reply.text
+
+
+async def test_acp_client_hook_tool_call_does_not_swallow_reply_text():
+    client = make_client()
+    session_id = "s-hook-text"
+    client.start_capture(session_id)
+
+    await client.session_update(
+        session_id=session_id,
+        update=ToolCallStart(
+            title="Ran hook: /opt/hooks/patina-prompt-submit.sh (user_prompt)",
+            tool_call_id="hook-1",
+            status="completed",
+            session_update="tool_call",
+        ),
+    )
+    await client.session_update(
+        session_id=session_id,
+        update=AgentMessageChunk(content=text_block("the reply"), session_update="agent_message_chunk"),
+    )
+
+    reply = await client.finish_capture(session_id)
+
+    assert reply.text == "the reply"
+
+
+async def test_acp_client_hook_tool_call_leaves_active_tool_block_untouched():
+    client = make_client()
+    session_id = "s-hook-midtool"
+    client.start_capture(session_id)
+
+    await client.session_update(
+        session_id=session_id,
+        update=ToolCallStart(
+            title="ls",
+            tool_call_id="tool-1",
+            kind="exec",
+            session_update="tool_call",
+        ),
+    )
+    await client.session_update(
+        session_id=session_id,
+        update=ToolCallStart(
+            title="Ran hook: /opt/hooks/on-tool.sh (post_tool_use)",
+            tool_call_id="hook-1",
+            status="completed",
+            session_update="tool_call",
+        ),
+    )
+    await client.session_update(
+        session_id=session_id,
+        update=AgentMessageChunk(content=text_block("tool output"), session_update="agent_message_chunk"),
+    )
+    await client.session_update(
+        session_id=session_id,
+        update=ToolCallProgress(
+            tool_call_id="tool-1",
+            title="ls",
+            status="completed",
+            session_update="tool_call_update",
+        ),
+    )
+
+    reply = await client.finish_capture(session_id)
+
+    assert [block.activity_id for block in reply.activity_blocks] == ["tool-1"]
+    assert reply.activity_blocks[0].text == "tool output"
