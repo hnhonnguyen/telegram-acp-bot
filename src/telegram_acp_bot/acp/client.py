@@ -58,6 +58,23 @@ from telegram_acp_bot.acp.session import (
     _PendingTextState,
 )
 
+_HOOK_TOOL_TITLE_PREFIX = "Ran hook"
+
+
+def _is_hook_tool_call(*, kind: str, title: str) -> bool:
+    """Whether a tool call reports an agent hook run rather than real work.
+
+    Agents surface lifecycle hooks as ordinary tool calls — Devin titles them
+    `Ran hook: <script> (<event>)`, others may tag `kind="hook"`. Their raw
+    output is plumbing, not user-facing progress, so it is hidden from chat.
+    """
+    return kind == "hook" or title.startswith(_HOOK_TOOL_TITLE_PREFIX)
+
+
+def _is_hook_block(block: AgentActivityBlock) -> bool:
+    """Whether the activity block reports an agent hook run. See `{py:func}`_is_hook_tool_call`."""
+    return _is_hook_tool_call(kind=block.kind, title=block.title)
+
 
 def _agent_command(command: AvailableCommand) -> AgentCommand:
     """Project one ACP advertised command onto the transport-facing model."""
@@ -342,6 +359,10 @@ class _AcpClient:
         if active_block is None:
             return
 
+        if _is_hook_tool_call(kind=active_block.kind, title=active_block.title):
+            self._active_tool_blocks[session_id] = None
+            return
+
         normalized_status = status if status in TERMINAL_TOOL_STATUSES else "in_progress"
         block_text = "".join(active_block.chunks).strip()
         if is_prompt_end and active_block.kind != "think" and block_text:
@@ -354,8 +375,8 @@ class _AcpClient:
             text=block_text,
             activity_id=active_block.tool_call_id,
         )
-        self._completed_tool_blocks.setdefault(session_id, []).append(block)
         self._active_tool_blocks[session_id] = None
+        self._completed_tool_blocks.setdefault(session_id, []).append(block)
         if block.kind == "think" or block.text:
             await self._emit_activity_block(session_id=session_id, block=block)
 
@@ -365,6 +386,8 @@ class _AcpClient:
 
     async def _emit_activity_block(self, *, session_id: str, block: AgentActivityBlock) -> None:
         if self._activity_reporter is None:
+            return
+        if _is_hook_block(block):
             return
         await self._activity_reporter(session_id, block)
 

@@ -110,6 +110,9 @@ The available modes are:
 - `compact`: one in-progress status message that names the current action and becomes the final answer.
 - `verbose`: in-place append-only streaming for reply text and active tool output.
 
+Agent hook runs (for example Devin's `Ran hook: <script>` tool calls) are internal
+plumbing, not progress, and are hidden from chat activity in every mode.
+
 (how-to-busy-queue)=
 ## 7. Busy-state handling
 
