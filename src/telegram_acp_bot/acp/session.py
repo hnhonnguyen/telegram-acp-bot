@@ -8,9 +8,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from acp.core import ClientSideConnection
-from acp.schema import PermissionOption, RequestPermissionResponse
+from acp.schema import (
+    CreateElicitationResponse,
+    PermissionOption,
+    RequestPermissionResponse,
+)
 
-from telegram_acp_bot.acp.models import PermissionMode
+from telegram_acp_bot.acp.models import ElicitationQuestion, PermissionMode
 
 if TYPE_CHECKING:
     from telegram_acp_bot.acp.client import _AcpClient
@@ -41,6 +45,16 @@ class _PendingPermission:
     tool_call_id: str
     options: tuple[PermissionOption, ...]
     future: asyncio.Future[RequestPermissionResponse]
+
+
+@dataclass(slots=True)
+class _PendingElicitation:
+    request_id: str
+    chat_id: int
+    acp_session_id: str
+    message: str
+    questions: tuple[ElicitationQuestion, ...]
+    future: asyncio.Future[CreateElicitationResponse]
 
 
 @dataclass(slots=True)

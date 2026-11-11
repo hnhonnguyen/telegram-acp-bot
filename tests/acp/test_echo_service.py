@@ -102,6 +102,16 @@ async def test_permission_handler_and_response_are_noop() -> None:
     assert await service.respond_permission_request(chat_id=1, request_id="x", action="deny") is False
 
 
+async def test_elicitation_handler_and_response_are_noop() -> None:
+    service = EchoAgentService(SessionRegistry())
+
+    async def handler(request):
+        del request
+
+    service.set_elicitation_request_handler(handler)
+    assert await service.respond_elicitation_request(chat_id=1, request_id="x", answers=None) is False
+
+
 async def test_new_session_rejects_file_workspace(tmp_path: Path) -> None:
     service = EchoAgentService(SessionRegistry())
     invalid = tmp_path / "file.txt"
@@ -113,3 +123,31 @@ async def test_new_session_rejects_file_workspace(tmp_path: Path) -> None:
 
 async def test_normalize_workspace_allows_none() -> None:
     assert EchoAgentService._normalize_workspace(None) is None
+
+
+async def test_echo_service_does_not_expose_available_commands() -> None:
+    assert not hasattr(EchoAgentService(SessionRegistry()), "get_available_commands")
+
+
+async def test_echo_service_records_group_history_until_the_cap() -> None:
+    service = EchoAgentService(SessionRegistry())
+
+    for message_id in (1, 2, 3):
+        await service.record_group_message(
+            chat_id=1,
+            message_id=message_id,
+            sender_id=7,
+            sender_name="alice",
+            text=f"msg {message_id}",
+            max_entries=2,
+        )
+    await service.record_group_message(
+        chat_id=1, message_id=3, sender_id=7, sender_name="alice", text="replay", max_entries=2
+    )
+    await service.record_group_message(
+        chat_id=1, message_id=9, sender_id=7, sender_name="alice", text="ignored", max_entries=0
+    )
+
+    assert [entry["message_id"] for entry in await service.read_group_history(chat_id=1)] == [2, 3]
+    assert [entry["text"] for entry in await service.read_group_history(chat_id=1)] == ["msg 2", "replay"]
+    assert await service.read_group_history(chat_id=2) == ()

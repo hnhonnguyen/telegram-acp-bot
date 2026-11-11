@@ -11,12 +11,13 @@ from typing import cast
 from urllib.parse import quote
 
 import pytest
-from acp import RequestError, text_block
+from acp import RequestError
 from acp.schema import (
     AgentCapabilities,
     AgentMessageChunk,
     AllowedOutcome,
     AudioContentBlock,
+    AvailableCommand,
     BlobResourceContents,
     DeniedOutcome,
     EmbeddedResourceContentBlock,
@@ -34,9 +35,12 @@ from acp.schema import (
     ToolCallStart,
 )
 
-from telegram_acp_bot.acp.service import AcpAgentService, _AcpClient, _PendingPermission
+from telegram_acp_bot.acp.compat import text_block, update_available_commands
+from telegram_acp_bot.acp.service import AGENT_EXIT_NOTICE, AcpAgentService, _AcpClient, _PendingPermission
 from telegram_acp_bot.acp.models import (
     AgentActivityBlock,
+    AgentCommand,
+    AgentConnectionLostError,
     AgentOutputLimitExceededError,
     AgentReply,
     FilePayload,
@@ -48,6 +52,7 @@ from telegram_acp_bot.core.session_registry import SessionRegistry
 from telegram_acp_bot.logging_context import LOG_TEXT_PREVIEW_MAX_CHARS, log_text_preview
 from telegram_acp_bot.mcp.state import (
     load_last_session_id,
+    load_pending_media,
     load_prompt_message_id,
     load_session_chat_map,
     save_last_session_id,
@@ -59,6 +64,8 @@ pytestmark = pytest.mark.asyncio
 
 EXPECTED_CAPTURED_FILES = 2
 ACP_STDIO_LIMIT_ERROR = "Separator is found, but chunk is longer than limit"
+CONNECTION_CLOSED_ERROR = "Connection closed"
+AGENT_BINARY_MISSING_ERROR = "agent binary is gone"
 
 
 def make_client() -> _AcpClient:
@@ -127,6 +134,7 @@ class FakeConnection:
         self._session_id = session_id
         self.new_session_mcp_servers: list | None = None
         self.load_session_mcp_servers: list | None = None
+        self.connect_kwargs: dict[str, bool] = {}
 
     async def initialize(self, **kwargs):
         self.initialized = True
@@ -187,10 +195,61 @@ class FileResourceConnection(FakeConnection):
         return SimpleNamespace(stop_reason="end_turn")
 
 
+class CommandsConnection(FakeConnection):
+    """Fake agent that advertises its slash commands while the session is being created."""
+
+    async def new_session(self, *, cwd: str, mcp_servers: list) -> SimpleNamespace:
+        session = await super().new_session(cwd=cwd, mcp_servers=mcp_servers)
+        assert self.client is not None
+        await self.client.session_update(
+            session_id=session.session_id,
+            update=update_available_commands(
+                [
+                    AvailableCommand(
+                        name="goal",
+                        description="Set or manage a persistent goal",
+                        input={"hint": "<objective> | status"},
+                    ),
+                    AvailableCommand(name="deep-research", description="Research a topic"),
+                ]
+            ),
+        )
+        return session
+
+
+class ReadvertiseCommandsConnection(CommandsConnection):
+    """Fake agent that publishes a different command list after each prompt."""
+
+    async def prompt(self, *, session_id: str, prompt: list) -> SimpleNamespace:
+        result = await super().prompt(session_id=session_id, prompt=prompt)
+        assert self.client is not None
+        await self.client.session_update(
+            session_id=session_id,
+            update=update_available_commands(
+                [
+                    AvailableCommand(
+                        name=f"extra-{len(self.prompt_calls)}",
+                        description=f"Command added on prompt {len(self.prompt_calls)}",
+                        input={"hint": "<target>"},
+                    )
+                ]
+            ),
+        )
+        return result
+
+
 class OversizeLineConnection(FakeConnection):
     async def prompt(self, *, session_id: str, prompt: list) -> SimpleNamespace:
         del session_id, prompt
         raise ValueError(ACP_STDIO_LIMIT_ERROR)
+
+
+class ConnectionLossConnection(FakeConnection):
+    """Fake agent whose stdio dies while a prompt is in flight, like a killed process."""
+
+    async def prompt(self, *, session_id: str, prompt: list) -> SimpleNamespace:
+        del session_id, prompt
+        raise ConnectionError(CONNECTION_CLOSED_ERROR)
 
 
 class GenericValueErrorConnection(FakeConnection):
@@ -228,17 +287,25 @@ class NoSessionCapabilitiesConnection(FakeConnection):
 
 __all__ = [
     "ACP_STDIO_LIMIT_ERROR",
+    "AGENT_BINARY_MISSING_ERROR",
+    "AGENT_EXIT_NOTICE",
+    "CONNECTION_CLOSED_ERROR",
     "EXPECTED_CAPTURED_FILES",
     "LOG_TEXT_PREVIEW_MAX_CHARS",
     "AcpAgentService",
     "AgentActivityBlock",
     "AgentCapabilities",
+    "AgentCommand",
+    "AgentConnectionLostError",
     "AgentMessageChunk",
     "AgentOutputLimitExceededError",
     "AgentReply",
     "AllowedOutcome",
     "AudioContentBlock",
+    "AvailableCommand",
     "BlobResourceContents",
+    "CommandsConnection",
+    "ConnectionLossConnection",
     "DeniedOutcome",
     "EmbeddedResourceContentBlock",
     "FakeConnection",
@@ -258,6 +325,7 @@ __all__ = [
     "PermissionOption",
     "PromptFile",
     "PromptImage",
+    "ReadvertiseCommandsConnection",
     "RequestError",
     "RequestPermissionResponse",
     "ResourceContentBlock",
@@ -276,6 +344,7 @@ __all__ = [
     "base64",
     "cast",
     "load_last_session_id",
+    "load_pending_media",
     "load_prompt_message_id",
     "load_session_chat_map",
     "log_text_preview",
@@ -288,4 +357,5 @@ __all__ = [
     "save_prompt_message_id",
     "save_session_chat_map",
     "text_block",
+    "update_available_commands",
 ]

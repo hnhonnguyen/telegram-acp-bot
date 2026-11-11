@@ -97,5 +97,50 @@ class ResumableSession:
     updated_at: str
 
 
+@dataclass(slots=True, frozen=True)
+class AgentCommand:
+    """Slash command an agent advertised over ACP."""
+
+    name: str
+    description: str
+    hint: str = ""
+
+
+@dataclass(slots=True, frozen=True)
+class ElicitationOption:
+    """One answer an elicitation offers: the value to send back and the label to show."""
+
+    value: str
+    label: str
+
+
+@dataclass(slots=True, frozen=True)
+class ElicitationQuestion:
+    """One form field the agent wants answered, flattened to a choice between known options."""
+
+    field: str
+    prompt: str
+    options: tuple[ElicitationOption, ...]
+    multiple: bool = False
+
+
+@dataclass(slots=True, frozen=True)
+class ElicitationRequest:
+    """A form elicitation awaiting the user's taps."""
+
+    chat_id: int
+    request_id: str
+    title: str
+    questions: tuple[ElicitationQuestion, ...]
+
+
 class AgentOutputLimitExceededError(RuntimeError):
     """Raised when the agent emits a stdio line larger than the configured reader limit."""
+
+
+class AgentConnectionLostError(RuntimeError):
+    """Raised when the agent died and the bot could not bring a session back for this chat.
+
+    See also `{py:meth}`telegram_acp_bot.acp.service.AcpAgentService.prompt`, which recovers
+    from a dead agent and only raises this when recovery itself failed.
+    """

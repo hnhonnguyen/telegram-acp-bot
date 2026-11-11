@@ -37,7 +37,9 @@ def _package_version() -> str:
 class AcpConnectionFactory(Protocol):
     """Factory protocol to connect a client implementation to an ACP agent."""
 
-    def __call__(self, client: object, input_stream: object, output_stream: object) -> ClientSideConnection: ...
+    def __call__(
+        self, client: object, input_stream: object, output_stream: object, *, use_unstable_protocol: bool
+    ) -> ClientSideConnection: ...
 
 
 class AcpSpawnFn(Protocol):
@@ -49,7 +51,8 @@ class AcpSpawnFn(Protocol):
 class ProcessLike(Protocol):
     """Subset of process API used by service shutdown logic."""
 
-    returncode: int | None
+    @property
+    def returncode(self) -> int | None: ...
 
     def terminate(self) -> None: ...
 

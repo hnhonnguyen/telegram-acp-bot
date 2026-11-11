@@ -56,7 +56,9 @@ uvx telegram-acp-bot
 Current interaction capabilities:
 - `/new [workspace]`, `/resume [N|workspace]`, `/session`, `/cancel`, `/stop`, `/clear`, `/restart [N [workspace]]`
 - `/mode [normal|compact|verbose]` to switch the activity display per chat
+- `/cmds` for tap-to-run buttons of the slash commands the agent advertises, which are then forwarded to it unchanged
 - Interactive permission prompts with inline buttons (`Always`, `This time`, `Deny`)
+- Agent questions asked over ACP elicitation as inline buttons, including multi-select answers and a skip button
 - Plain text prompts
 - Image and document attachments from Telegram messages
 - ACP `file://` resources are sent as attachments when they resolve to files inside the active workspace

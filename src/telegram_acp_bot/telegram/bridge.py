@@ -6,6 +6,7 @@ import asyncio
 import base64
 import logging
 import re
+from collections.abc import Awaitable, Callable, Mapping
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from io import BytesIO
@@ -26,7 +27,7 @@ from telegram import (
     Update,
 )
 from telegram.constants import ChatAction, ParseMode
-from telegram.error import TelegramError
+from telegram.error import BadRequest, TelegramError
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -41,16 +42,21 @@ from telegramify_markdown import convert, split_entities, utf16_len
 from telegram_acp_bot.acp.models import (
     ActivityMode,
     AgentActivityBlock,
+    AgentCommand,
+    AgentConnectionLostError,
     AgentOutputLimitExceededError,
     AgentReply,
+    ElicitationOption,
+    ElicitationQuestion,
+    ElicitationRequest,
     FilePayload,
     ImagePayload,
-    PermissionDecisionAction,
     PermissionRequest,
     PromptFile,
     PromptImage,
     ResumableSession,
 )
+from telegram_acp_bot.agent_identity import DEFAULT_AGENT_NAME
 from telegram_acp_bot.logging_context import bind_log_context, log_text_preview
 from telegram_acp_bot.scheduled_tasks import (
     ScheduledTask,
@@ -69,11 +75,36 @@ from telegram_acp_bot.telegram.config import BotConfig
 from telegram_acp_bot.telegram.constants import (
     ACTIVITY_MODE_CHOICES,
     ACTIVITY_MODE_HELP,
+    AGENT_COMMAND_CALLBACK_PARTS,
+    AGENT_COMMAND_CALLBACK_PREFIX,
+    AGENT_COMMAND_DESCRIPTION_CHARS,
+    AGENT_COMMAND_KEYBOARD_COLUMNS,
+    AGENT_COMMAND_KEYBOARD_INFO_CALLBACK_DATA,
+    AGENT_COMMAND_KEYBOARD_INFO_LABEL,
+    AGENT_COMMAND_KEYBOARD_MAX_ROWS,
     BUSY_CALLBACK_PARTS,
     BUSY_CALLBACK_PREFIX,
     BUSY_QUEUED_TEXT,
     BUSY_SENT_TEXT,
     BUSY_STILL_QUEUED_TEXT,
+    COMPACT_STATUS_HINT_CHARS,
+    COMPACT_STATUS_TICK_SECONDS,
+    ELICITATION_ANSWER_JOINER,
+    ELICITATION_ANSWER_RECORD_PREFIX,
+    ELICITATION_CALLBACK_PARTS,
+    ELICITATION_CALLBACK_PREFIX,
+    ELICITATION_FORMS_MAX,
+    ELICITATION_KEYBOARD_COLUMNS,
+    ELICITATION_OPTION_LABEL_CHARS,
+    ELICITATION_REMOVED_KEYBOARD,
+    ELICITATION_SELECTED_PREFIX,
+    ELICITATION_SKIP_LABEL,
+    ELICITATION_SKIP_RECORD,
+    ELICITATION_SKIP_TOKEN,
+    ELICITATION_SUBMIT_LABEL,
+    ELICITATION_SUBMIT_TOKEN,
+    GROUP_BOT_TURN_BUDGET,
+    GROUP_BUDGET_HOLD_TEXT,
     KIND_LABELS,
     MAX_RESTART_ARGS,
     MAX_RESUME_ARGS,
@@ -90,6 +121,7 @@ from telegram_acp_bot.telegram.constants import (
     SEARCH_LABEL_NEUTRAL,
     SEARCH_LABEL_WEB,
     TELEGRAM_MAX_UTF16_MESSAGE_LENGTH,
+    TELEGRAM_UNCHANGED_MESSAGE_ERROR,
 )
 from telegram_acp_bot.telegram.models import (
     AgentService,
@@ -99,6 +131,7 @@ from telegram_acp_bot.telegram.models import (
     _RestartArgs,
     _ResumeArgs,
 )
+from telegram_acp_bot.telegram.reactions import PromptStatus, StatusReactionSender
 
 logger = logging.getLogger(__name__)
 APP_NOT_RUNNING_ERROR = "application is not running"
@@ -108,6 +141,158 @@ SCHEDULED_MISSING_ANCHOR_ERROR = "scheduled task is missing an anchor message"
 SCHEDULED_TASK_PREVIEW_MAX_CHARS = 72
 SCHEDULE_COMMAND_MIN_ARGS = 2
 _SCHEDULE_DELAY_RE = re.compile(r"^(\d+)(s|m|h|d)$", re.IGNORECASE)
+GROUP_CHAT_TYPES = frozenset({"group", "supergroup"})
+_AGENT_COMMAND_TOKEN_RE = re.compile(r"^/([A-Za-z0-9_-]{1,32})(?:@([A-Za-z0-9_]{1,32}))?(?:\s|$)")
+_AGENT_COMMAND_BUTTON_NAME_RE = re.compile(r"[A-Za-z0-9_-]{1,32}")
+
+
+def _text_mentions_handle(text: str | None, entities: tuple[MessageEntity, ...] | None, handle: str) -> bool:
+    lowered = (text or "").lower()
+    if handle in lowered:
+        return True
+    return any(
+        entity.type == "mention" and lowered[entity.offset : entity.offset + entity.length] == handle
+        for entity in entities or ()
+    )
+
+
+def _mentions_handle(message: Message, handle: str) -> bool:
+    """True when a message names this bot, whichever of its text or caption carries the mention."""
+    if _text_mentions_handle(message.text, getattr(message, "entities", None), handle):
+        return True
+    return _text_mentions_handle(message.caption, getattr(message, "caption_entities", None), handle)
+
+
+def _media_references(message: Message) -> tuple[tuple[str, str | None], ...]:
+    """Return `(file_id, mime_type)` for media a message carries, largest photo rendition only."""
+
+    if message.photo:
+        return ((message.photo[-1].file_id, "image/jpeg"),)
+    document = message.document
+    if document is not None:
+        return ((document.file_id, document.mime_type),)
+    return ()
+
+
+PENDING_MEDIA_HEADER = (
+    "Pending Telegram attachments (not downloaded yet). "
+    "Call telegram_fetch_attachment with a file_id when you actually need one, or "
+    "telegram_download_file with the message_id when the file is larger than 20 MB, "
+    "which the Bot API refuses to serve. "
+    "Telegram keeps a media file downloadable for roughly an hour after it arrives, "
+    "so fetch the ones you need now:"
+)
+
+
+def _with_pending_media(text: str, refs: tuple[dict[str, object], ...]) -> str:
+    """Prefix a prompt with the media references the mention gate parked for this chat."""
+
+    if not refs:
+        return text
+    lines = [PENDING_MEDIA_HEADER]
+    lines.extend(
+        f"- file_id={ref['file_id']} message_id={ref['message_id']} "
+        f"mime={ref['mime_type']} queued_at={ref['queued_at']}"
+        for ref in refs
+    )
+    notice = "\n".join(lines)
+    return f"{notice}\n\n{text}" if text else notice
+
+
+def _sender_label(user: object) -> str:
+    """Who sent an update, in the form the agent should address them with.
+
+    A public username wins, because a reply that repeats it becomes a Telegram mention the person is
+    notified about. A member without one falls back to their display name, which identifies them in
+    text but cannot be mentioned.
+    """
+    username = str(getattr(user, "username", None) or "").lstrip("@").strip()
+    if username:
+        return f"@{username}"
+    return str(getattr(user, "full_name", None) or "").strip()
+
+
+def _with_sender_label(text: str, label: str) -> str:
+    """Prefix a group prompt with the sender, so the agent knows who it is answering."""
+
+    if not label:
+        return text
+    return f"{label}: {text}" if text else label
+
+
+GROUP_MENTION_REMINDER = (
+    "Group chat: everyone reads your reply, and nobody is notified unless you name them. "
+    "Open your answer with the @username of the person you are replying to — that is the sender below "
+    "when they asked you, and someone else when the conversation is about them, since a request like "
+    "'discuss this with Bob' wants an answer addressed to Bob, not to the requester. "
+    "`telegram_list_messages` lists the @usernames of recent senders when you need one you have not seen. "
+    "Skip the mention only when the whole group is the audience."
+)
+
+
+def _with_group_context(text: str, label: str) -> str:
+    """Tag a group prompt with its sender and the reminder that only a named reply notifies anyone."""
+
+    tagged = _with_sender_label(text, label)
+    if not tagged:
+        return GROUP_MENTION_REMINDER
+    return f"{GROUP_MENTION_REMINDER}\n\n{tagged}"
+
+
+def _command_name(name: str) -> str:
+    """Normalize a command name for comparison, whichever casing the agent published."""
+    return name.removeprefix("/").lower()
+
+
+def _command_button(command: AgentCommand) -> InlineKeyboardButton | None:
+    """Tap-to-run button for one advertised command, or None when its name cannot travel as callback data.
+
+    Callback data is capped at 64 bytes and the gate only recognises `[A-Za-z0-9_-]{1,32}` names, so a
+    name outside that shape would produce a button whose tap the prompt path could never honour.
+    """
+    name = _command_name(command.name)
+    if _AGENT_COMMAND_BUTTON_NAME_RE.fullmatch(name) is None:
+        return None
+    return InlineKeyboardButton(text=f"/{name}", callback_data=f"{AGENT_COMMAND_CALLBACK_PREFIX}|{name}")
+
+
+def _bot_handle(context: object) -> str:
+    """This bot's own Telegram username, lowercased and without the leading `@`."""
+    username = getattr(getattr(context, "bot", None), "username", None) or ""
+    return username.lstrip("@").strip().lower()
+
+
+def _without_own_mention(text: str, match: re.Match[str], handle: str) -> str:
+    """Drop the `@<this bot>` suffix Telegram appends to menu-picked commands, keeping the arguments.
+
+    Agents parse the raw prompt text, and an advertised command written `/goal@some_bot` is not a
+    command name they know, so the mention is removed before the text reaches `session/prompt`.
+    """
+    mention = match.group(2)
+    if mention is None or mention.lower() != handle.lower():
+        return text
+    return f"/{match.group(1)}{text[match.end(1) + len(mention) + 1 :]}"
+
+
+class _AgentCommandMessage(filters.MessageFilter):
+    """Match messages that open with a `/command` token, in the text or in a media caption.
+
+    `telegram.ext.filters.COMMAND` keys on the `bot_command` entity, which the Bot API only
+    attaches reliably in private chats, so the token is matched from the raw text instead.
+    """
+
+    __slots__ = ()
+
+    def __init__(self) -> None:
+        super().__init__(name="filters.AgentCommand")
+
+    def filter(self, message: Message) -> bool:
+        return _AGENT_COMMAND_TOKEN_RE.match(message.text or message.caption or "") is not None
+
+
+_AGENT_COMMAND = _AgentCommandMessage()
+
+_BotCommandHandler = Callable[[Update, ContextTypes.DEFAULT_TYPE], Awaitable[None]]
 
 
 class TelegramBridge:
@@ -119,11 +304,20 @@ class TelegramBridge:
         agent_service: AgentService,
         *,
         scheduled_task_store: ScheduledTaskStore | None = None,
+        stop_request: Callable[[], None] | None = None,
+        agent_name: str = DEFAULT_AGENT_NAME,
     ) -> None:
         self._config = config
         self._agent_service = agent_service
         self._scheduled_task_store = scheduled_task_store
+        # The agent this bot talks to, named so several bots in one process tell their
+        # users apart.
+        self._agent_name = agent_name
+        # Set when a Telegram command asks the whole process to exit, so the runner can
+        # tear every instance down instead of only this bot's application.
+        self._stop_request = stop_request
         self._app: Application | None = None
+        self._bot_commands: dict[str, _BotCommandHandler] = {}
         self._restart_requested = False
         self._activity_mode_by_chat: dict[int, ActivityMode] = {}
         self._implicit_start_locks_by_chat: dict[int, asyncio.Lock] = {}
@@ -136,9 +330,23 @@ class TelegramBridge:
         self._compact_status_locks: dict[int, asyncio.Lock] = {}
         # Current compact status label per chat (for example "⚙️ Running").
         self._compact_status_label: dict[int, str] = {}
-        # Background animation task per chat for `. .. ...` progress.
+        # Text actually shown on the status message per chat, so unchanged labels skip the API call.
+        self._compact_status_displayed: dict[int, str] = {}
+        # Background task that paints the current label onto the single status message per chat.
         self._compact_status_tasks: dict[int, asyncio.Task[None]] = {}
         self._suppressed_activity_chats: set[int] = set()
+        # Answers one bot drew out of another since a human last spoke in that chat, so a group of
+        # bots cannot keep each other busy for ever. See {py:meth}`_reserve_bot_turn`.
+        self._bot_turns_by_chat: dict[int, int] = {}
+        # Chats that already saw the hold notice since the last human message.
+        self._bot_budget_notified: set[int] = set()
+        # Form the bot offered per pending elicitation, so a later tap can re-render the same keyboard.
+        self._elicitation_forms: dict[str, ElicitationRequest] = {}
+        # Option indexes chosen per pending elicitation, keyed by the schema field being answered.
+        self._elicitation_selections: dict[str, dict[str, list[int]]] = {}
+        # Question message per pending elicitation, so its keyboard can be removed once it stops waiting.
+        self._elicitation_messages: dict[str, int | None] = {}
+        self._status_reactions = StatusReactionSender(config.status_reactions)
         self._activity_handlers: dict[ActivityMode, _ActivityModeHandler] = {
             "normal": _NormalActivityModeHandler(self),
             "compact": _CompactActivityModeHandler(self),
@@ -148,27 +356,44 @@ class TelegramBridge:
             self._agent_service.set_permission_request_handler(self.on_permission_request)
         if hasattr(self._agent_service, "set_activity_event_handler"):
             self._agent_service.set_activity_event_handler(self.on_activity_event)
+        if hasattr(self._agent_service, "set_elicitation_request_handler"):
+            self._agent_service.set_elicitation_request_handler(self.on_elicitation_request)
+        if hasattr(self._agent_service, "set_elicitation_expiry_handler"):
+            self._agent_service.set_elicitation_expiry_handler(self.on_elicitation_expired)
+
+    @property
+    def restart_requested(self) -> bool:
+        """Whether a `/restart` already asked this process to exit and re-exec."""
+        return self._restart_requested
 
     def install(self, app: Application) -> None:
         self._app = app
-        app.add_handler(CommandHandler("start", self.start))
-        app.add_handler(CommandHandler("help", self.help))
-        app.add_handler(CommandHandler("new", self.new_session))
-        app.add_handler(CommandHandler("resume", self.resume_session))
-        app.add_handler(CommandHandler("schedule", self.schedule_prompt))
-        app.add_handler(CommandHandler("scheduled", self.scheduled))
-        app.add_handler(CommandHandler("mode", self.mode))
-        app.add_handler(CommandHandler("session", self.session))
-        app.add_handler(CommandHandler("cancel", self.cancel))
-        app.add_handler(CommandHandler("stop", self.stop))
-        app.add_handler(CommandHandler("clear", self.clear))
-        app.add_handler(CommandHandler("restart", self.restart))
+        for name, callback in (
+            ("start", self.start),
+            ("help", self.help),
+            ("new", self.new_session),
+            ("resume", self.resume_session),
+            ("schedule", self.schedule_prompt),
+            ("scheduled", self.scheduled),
+            ("mode", self.mode),
+            ("session", self.session),
+            ("cancel", self.cancel),
+            ("stop", self.stop),
+            ("clear", self.clear),
+            ("restart", self.restart),
+            ("cmds", self.cmds),
+        ):
+            self._bot_commands[name] = callback
+            app.add_handler(CommandHandler(name, callback))
         app.add_handler(CallbackQueryHandler(self.on_permission_callback, pattern=r"^perm\|"))
         app.add_handler(CallbackQueryHandler(self.on_resume_callback, pattern=r"^resume\|"))
         app.add_handler(CallbackQueryHandler(self.on_scheduled_callback, pattern=r"^scheduled\|"))
         app.add_handler(CallbackQueryHandler(self.on_busy_callback, pattern=r"^busy\|"))
+        app.add_handler(CallbackQueryHandler(self.on_agent_command_callback, pattern=r"^cmd\|"))
+        app.add_handler(CallbackQueryHandler(self.on_elicitation_callback, pattern=r"^ask\|"))
+        app.add_handler(MessageHandler(_AGENT_COMMAND, self.on_agent_command))
         app.add_handler(
-            MessageHandler((filters.TEXT | filters.PHOTO | filters.Document.ALL) & ~filters.COMMAND, self.on_message)
+            MessageHandler((filters.TEXT | filters.PHOTO | filters.Document.ALL) & ~_AGENT_COMMAND, self.on_message)
         )
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -180,16 +405,79 @@ class TelegramBridge:
             "Send a message to start in the default workspace, or use /new [workspace] or /resume [N|workspace].",
         )
 
+    def _help_header(self) -> str:
+        """Name the agent behind this bot, so several bots in one process tell users apart."""
+        if self._agent_name == DEFAULT_AGENT_NAME:
+            return ""
+        return f"You are talking to the {self._agent_name} agent.\n\n"
+
     async def help(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         del context
         if not await self._require_access(update):
             return
         await self._reply(
             update,
-            "Commands: /new [workspace], /resume [N|workspace], /schedule <time> <prompt>, /scheduled, "
+            f"{self._help_header()}Commands: /new [workspace], /resume [N|workspace], /schedule <time> <prompt>, "
+            "/scheduled, "
             "/mode [normal|compact|verbose], "
-            "/session, /cancel, /stop, /clear, /restart [N [workspace]], /help",
+            "/session, /cancel, /stop, /clear, /restart [N [workspace]], /cmds, /help",
         )
+
+    async def cmds(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        del context
+        if not await self._require_access(update):
+            return
+        commands = self._advertised_commands(chat_id=self._chat_id(update))
+        if not commands:
+            await self._reply(
+                update,
+                "This agent has not advertised any slash commands yet. Send a message first, or use /new.",
+            )
+            return
+        message = update.message
+        if message is None:
+            return
+        await message.reply_text(
+            f"{len(commands)} agent commands. Tap one to run it, or type it with arguments.",
+            reply_markup=self._commands_keyboard(commands=commands),
+        )
+
+    def _advertised_commands(self, *, chat_id: int) -> tuple[AgentCommand, ...]:
+        """Slash commands the agent published for this chat; empty when the service or session has none."""
+        provider = getattr(self._agent_service, "get_available_commands", None)
+        if not callable(provider):
+            return ()
+        return provider(chat_id=chat_id) or ()
+
+    @staticmethod
+    def _commands_keyboard(*, commands: tuple[AgentCommand, ...]) -> InlineKeyboardMarkup:
+        """Grid of tap-to-run buttons, with the plain description listing kept one tap away."""
+        buttons = [button for button in map(_command_button, commands) if button is not None]
+        visible = buttons[: AGENT_COMMAND_KEYBOARD_MAX_ROWS * AGENT_COMMAND_KEYBOARD_COLUMNS]
+        rows = [
+            list(visible[start : start + AGENT_COMMAND_KEYBOARD_COLUMNS])
+            for start in range(0, len(visible), AGENT_COMMAND_KEYBOARD_COLUMNS)
+        ]
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=AGENT_COMMAND_KEYBOARD_INFO_LABEL,
+                    callback_data=AGENT_COMMAND_KEYBOARD_INFO_CALLBACK_DATA,
+                )
+            ]
+        )
+        return InlineKeyboardMarkup(rows)
+
+    @staticmethod
+    def _commands_listing(commands: tuple[AgentCommand, ...]) -> str:
+        lines: list[str] = []
+        for command in commands:
+            description = command.description
+            if len(description) > AGENT_COMMAND_DESCRIPTION_CHARS:
+                description = f"{description[: AGENT_COMMAND_DESCRIPTION_CHARS - 1].rstrip()}…"
+            suffix = f" — `{command.hint}`" if command.hint else ""
+            lines.append(f"/{command.name}: {description}{suffix}")
+        return "\n".join(lines)
 
     async def mode(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._require_access(update):
@@ -244,7 +532,8 @@ class TelegramBridge:
                 chat_id=chat_id,
                 workspace=parsed_args.workspace,
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
+            logger.exception("Failed to list resumable sessions for chat_id=%s", chat_id)
             await self._reply(update, f"Failed to list resumable sessions: {exc}")
             return
         if candidates is None:
@@ -516,7 +805,8 @@ class TelegramBridge:
                 chat_id=chat_id,
                 workspace=workspace,
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
+            logger.exception("Failed to list resumable sessions for chat_id=%s", chat_id)
             await self._reply(update, f"Failed to list resumable sessions: {exc}")
             return
         if candidates is None:
@@ -549,7 +839,312 @@ class TelegramBridge:
         session_id, workspace = active_session
         await self._reply(update, self._format_restart_response(session_id=session_id, workspace=workspace))
         self._restart_requested = True
-        self._app.stop_running()
+        if self._stop_request is not None:
+            self._stop_request()
+
+    async def on_elicitation_request(self, request: ElicitationRequest) -> None:
+        """Offer the agent's structured question as tap-able choices in the chat it came from."""
+        if self._app is None:
+            return
+
+        await self._remember_elicitation_form(request)
+        sent = await self._send_markdown_to_chat(
+            bot=self._app.bot,
+            chat_id=request.chat_id,
+            text=self._format_elicitation_text(request),
+            reply_markup=self._elicitation_keyboard(request, selections={}),
+        )
+        self._elicitation_messages[request.request_id] = getattr(sent, "message_id", None)
+        if sent is not None:
+            self._close_compact_status_bubble(request.chat_id)
+        with bind_log_context(chat_id=request.chat_id):
+            logger.info(
+                "Elicitation offered: request_id=%s questions=%s message_id=%s",
+                request.request_id,
+                len(request.questions),
+                getattr(sent, "message_id", None),
+            )
+
+    async def on_elicitation_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        del context
+        query = update.callback_query
+        if query is None:
+            return
+        try:
+            if not await self._require_access(update):
+                await query.answer("Access denied.")
+                return
+
+            parts = (query.data or "").split("|", maxsplit=ELICITATION_CALLBACK_PARTS - 1)
+            if len(parts) != ELICITATION_CALLBACK_PARTS:
+                await query.answer("Invalid action.")
+                return
+            form = self._elicitation_forms.get(parts[1])
+            if form is None:
+                logger.warning("Elicitation tap on a question that stopped waiting: request_id=%s", parts[1])
+                await query.answer("This question is no longer waiting for an answer.")
+                return
+            await self._take_elicitation_choice(form=form, token=parts[2], query=query)
+        except Exception:
+            logger.exception("Unhandled error while processing elicitation callback")
+            await query.answer("Answering this question failed.")
+
+    async def on_elicitation_expired(self, chat_id: int, request_id: str) -> None:
+        """Take the keyboard off a question the agent stopped waiting for, answered or not.
+
+        Without this, an abandoned question keeps looking tappable next to a live one, and every tap on
+        it only flashes a toast the user can easily miss.
+        """
+        if self._app is None:
+            return
+        unanswered = self._elicitation_forms.pop(request_id, None) is not None
+        message_id = self._elicitation_messages.pop(request_id, None)
+        self._elicitation_selections.pop(request_id, None)
+        if not unanswered or message_id is None:
+            return
+        with bind_log_context(chat_id=chat_id):
+            logger.info("Elicitation expired: request_id=%s message_id=%s", request_id, message_id)
+        try:
+            await self._app.bot.edit_message_reply_markup(
+                chat_id=chat_id,
+                message_id=message_id,
+                api_kwargs=dict(ELICITATION_REMOVED_KEYBOARD),
+            )
+        except BadRequest as exc:
+            with bind_log_context(chat_id=chat_id):
+                logger.warning("Elicitation keyboard left in place: request_id=%s error=%s", request_id, exc)
+
+    async def _take_elicitation_choice(self, *, form: ElicitationRequest, token: str, query: CallbackQuery) -> None:
+        """Apply one button of an offered form: skip, submit the picks, or record a tap."""
+        with bind_log_context(chat_id=form.chat_id):
+            logger.info("Elicitation tapped: request_id=%s token=%s", form.request_id, token)
+        if token == ELICITATION_SKIP_TOKEN:
+            await self._resolve_elicitation(form, answers=None, query=query, toast="Skipped.")
+            return
+        if token == ELICITATION_SUBMIT_TOKEN:
+            submitted = self._elicitation_answers(form, final=True)
+            if submitted is None:
+                await query.answer("Pick at least one option for every question.")
+                return
+            await self._resolve_elicitation(form, answers=submitted, query=query, toast="Answer sent.")
+            return
+
+        if not self._record_elicitation_tap(form=form, token=token):
+            await query.answer("That option is no longer available.")
+            return
+        answers = self._elicitation_answers(form)
+        if answers is None:
+            await self._replace_elicitation_markup(query, self._elicitation_keyboard(form))
+            await query.answer("Pick every answer, then tap Send my answer.")
+            return
+        await self._resolve_elicitation(form, answers=answers, query=query, toast="Answer sent.")
+
+    async def _replace_elicitation_markup(self, query: CallbackQuery, markup: InlineKeyboardMarkup | None) -> None:
+        """Put a new keyboard on the question message; a tap that changed nothing is not a failure.
+
+        Telegram removes an inline keyboard only when it is told to set an explicitly empty one: both an
+        omitted ``reply_markup`` and an empty ``InlineKeyboardMarkup`` (which serializes to ``{}``) mean
+        "change nothing" and come back as ``Message is not modified``.
+        """
+        try:
+            if markup is None:
+                await query.edit_message_reply_markup(api_kwargs=dict(ELICITATION_REMOVED_KEYBOARD))
+            else:
+                await query.edit_message_reply_markup(reply_markup=markup)
+        except BadRequest as exc:
+            if TELEGRAM_UNCHANGED_MESSAGE_ERROR not in str(exc).lower():
+                raise
+            logger.debug("Elicitation keyboard unchanged: %s", exc)
+
+    async def _remember_elicitation_form(self, request: ElicitationRequest) -> None:
+        """Keep the offered form so a later tap can re-render the same keyboard.
+
+        Shrinking the list is not only a memory decision. The service waits on every question it
+        asked, so a form dropped silently would leave its buttons on screen and hold the agent open
+        for the whole timeout while the bridge denied knowing about it.
+
+        The cap is per chat: a burst of questions in one chat must not decline another chat's
+        still-open question, which is what a shared slice did.
+        """
+        self._elicitation_forms[request.request_id] = request
+        self._elicitation_selections[request.request_id] = {}
+        same_chat = [form for form in self._elicitation_forms.values() if form.chat_id == request.chat_id]
+        for evicted in same_chat[:-ELICITATION_FORMS_MAX]:
+            await self._retire_elicitation(evicted)
+
+    async def _retire_elicitation(self, request: ElicitationRequest) -> None:
+        """Close a question the bounded form list is dropping, so no keyboard outlives its answer."""
+        with bind_log_context(chat_id=request.chat_id):
+            logger.info("Elicitation dropped from the form list: request_id=%s", request.request_id)
+        await self._agent_service.respond_elicitation_request(
+            chat_id=request.chat_id,
+            request_id=request.request_id,
+            answers=None,
+        )
+        await self.on_elicitation_expired(request.chat_id, request.request_id)
+
+    def _forget_elicitation(self, request_id: str) -> None:
+        self._elicitation_forms.pop(request_id, None)
+        self._elicitation_selections.pop(request_id, None)
+        self._elicitation_messages.pop(request_id, None)
+
+    @staticmethod
+    def _format_elicitation_text(request: ElicitationRequest) -> str:
+        numbered = len(request.questions) > 1
+        lines = ["*❓ The agent is asking*", request.title]
+        for index, question in enumerate(request.questions, start=1):
+            prefix = f"{index}. " if numbered else ""
+            suffix = " _(pick one or more)_" if question.multiple else ""
+            lines.append(f"{prefix}{question.prompt}{suffix}")
+        return "\n\n".join(lines)
+
+    def _elicitation_keyboard(
+        self,
+        request: ElicitationRequest,
+        *,
+        selections: Mapping[str, list[int]] | None = None,
+    ) -> InlineKeyboardMarkup:
+        chosen = selections if selections is not None else self._elicitation_selections.get(request.request_id, {})
+        rows: list[list[InlineKeyboardButton]] = []
+        for question_index, question in enumerate(request.questions):
+            picked = chosen.get(question.field, ())
+            buttons: list[InlineKeyboardButton] = []
+            for option_index, option in enumerate(question.options):
+                label = self._elicitation_button_label(question, option, selected=option_index in picked)
+                callback_data = f"{ELICITATION_CALLBACK_PREFIX}|{request.request_id}|{question_index}.{option_index}"
+                buttons.append(InlineKeyboardButton(text=label, callback_data=callback_data))
+                if len(buttons) >= ELICITATION_KEYBOARD_COLUMNS:
+                    rows.append(buttons)
+                    buttons = []
+            if buttons:
+                rows.append(buttons)
+        if any(question.multiple for question in request.questions):
+            submit_data = f"{ELICITATION_CALLBACK_PREFIX}|{request.request_id}|{ELICITATION_SUBMIT_TOKEN}"
+            rows.append([InlineKeyboardButton(text=ELICITATION_SUBMIT_LABEL, callback_data=submit_data)])
+        skip_data = f"{ELICITATION_CALLBACK_PREFIX}|{request.request_id}|{ELICITATION_SKIP_TOKEN}"
+        rows.append([InlineKeyboardButton(text=ELICITATION_SKIP_LABEL, callback_data=skip_data)])
+        return InlineKeyboardMarkup(rows)
+
+    @staticmethod
+    def _elicitation_button_label(question: ElicitationQuestion, option: ElicitationOption, *, selected: bool) -> str:
+        label = option.label or option.value
+        if len(label) > ELICITATION_OPTION_LABEL_CHARS:
+            label = f"{label[: ELICITATION_OPTION_LABEL_CHARS - 1].rstrip()}…"
+        if question.multiple and selected:
+            return f"{ELICITATION_SELECTED_PREFIX}{label}"
+        return label
+
+    def _record_elicitation_tap(self, *, form: ElicitationRequest, token: str) -> bool:
+        """Apply one tap to the pending selections, or report that it names no offered option."""
+        question_part, _, option_part = token.partition(".")
+        if not question_part.isdigit() or not option_part.isdigit():
+            return False
+        if not 0 <= int(question_part) < len(form.questions):
+            return False
+        question = form.questions[int(question_part)]
+        if not 0 <= int(option_part) < len(question.options):
+            return False
+        selected = int(option_part)
+        choices = self._elicitation_selections.setdefault(form.request_id, {})
+        current = choices.get(question.field, [])
+        if question.multiple:
+            if selected in current:
+                current.remove(selected)
+            else:
+                current.append(selected)
+        else:
+            current = [selected]
+        choices[question.field] = current
+        return True
+
+    def _elicitation_answers(
+        self,
+        form: ElicitationRequest,
+        *,
+        final: bool = False,
+    ) -> Mapping[str, tuple[str, ...]] | None:
+        """The tap answers, or None while the form still needs a choice or an explicit submit."""
+        choices = self._elicitation_selections.get(form.request_id, {})
+        answers: dict[str, tuple[str, ...]] = {}
+        for question in form.questions:
+            selected = choices.get(question.field, ())
+            if not selected or (question.multiple and not final):
+                return None
+            answers[question.field] = tuple(question.options[index].value for index in selected)
+        return answers
+
+    async def _resolve_elicitation(
+        self,
+        form: ElicitationRequest,
+        *,
+        answers: Mapping[str, tuple[str, ...]] | None,
+        query: CallbackQuery,
+        toast: str,
+    ) -> None:
+        accepted = await self._agent_service.respond_elicitation_request(
+            chat_id=form.chat_id,
+            request_id=form.request_id,
+            answers=answers,
+        )
+        self._forget_elicitation(form.request_id)
+        if not accepted:
+            with bind_log_context(chat_id=form.chat_id):
+                logger.warning("Elicitation response expired: request_id=%s", form.request_id)
+            await query.answer("This question is no longer waiting for an answer.")
+            return
+        await query.answer(toast)
+        await self._record_elicitation_outcome(form, query=query, answers=answers)
+
+    async def _record_elicitation_outcome(
+        self,
+        form: ElicitationRequest,
+        *,
+        query: CallbackQuery,
+        answers: Mapping[str, tuple[str, ...]] | None,
+    ) -> None:
+        """Turn the question message into the record of the choice.
+
+        The tapped answer is appended to the message that asked, and the same edit drops the
+        keyboard — so the question keeps its answer even after the conversation moved on to a new
+        bubble (B30). The appended line carries no formatting, so the original entities stay valid
+        at their offsets. If Telegram refuses the text edit the keyboard is still removed, because
+        a keyboard must never outlive the answer it asked for.
+        """
+        message = getattr(query, "message", None)
+        original = getattr(message, "text", None) if message is not None else None
+        line = self._elicitation_answer_line(form, answers=answers)
+        edited_text = f"{original}\n{line}" if original else line
+        entities = getattr(message, "entities", None) if message is not None else None
+        try:
+            if entities:
+                await query.edit_message_text(
+                    edited_text,
+                    entities=list(entities),
+                    api_kwargs=dict(ELICITATION_REMOVED_KEYBOARD),
+                )
+            else:
+                await query.edit_message_text(edited_text, api_kwargs=dict(ELICITATION_REMOVED_KEYBOARD))
+        except TelegramError as exc:
+            logger.warning("Elicitation answer record refused, clearing the keyboard instead: %s", exc)
+            await self._replace_elicitation_markup(query, None)
+
+    @staticmethod
+    def _elicitation_answer_line(
+        form: ElicitationRequest,
+        *,
+        answers: Mapping[str, tuple[str, ...]] | None,
+    ) -> str:
+        """One plain-text line naming what was tapped, mapping option values back to their labels."""
+        if answers is None:
+            return ELICITATION_SKIP_RECORD
+        numbered = len(form.questions) > 1
+        parts: list[str] = []
+        for index, question in enumerate(form.questions, start=1):
+            chosen = answers.get(question.field, ())
+            labels = [option.label or option.value for option in question.options if option.value in chosen]
+            prefix = f"{index}. " if numbered else ""
+            parts.append(f"{prefix}{', '.join(labels)}")
+        return f"{ELICITATION_ANSWER_RECORD_PREFIX} {ELICITATION_ANSWER_JOINER.join(parts)}"
 
     async def on_permission_request(self, request: PermissionRequest) -> None:
         if self._app is None:
@@ -626,7 +1221,7 @@ class TelegramBridge:
                 accepted = await self._agent_service.respond_permission_request(
                     chat_id=chat_id,
                     request_id=request_id,
-                    action=cast(PermissionDecisionAction, raw_action),
+                    action=raw_action,
                 )
                 if not accepted:
                     logger.warning("Permission callback rejected: request_id=%s chat_id=%s", request_id, chat_id)
@@ -841,11 +1436,97 @@ class TelegramBridge:
         await self._reply(update, response)
         return True
 
-    async def on_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    async def on_agent_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Forward a slash command the agent advertised straight into the normal prompt pipeline."""
+        await self._record_group_message(update)
+
         if not await self._require_access(update):
             return
 
-        prompt_input = await self._prompt_input(update=update, context=context)
+        if await self._silently_shelve_group_message(update, context):
+            return
+
+        message = update.message
+        text = "" if message is None else (message.text or message.caption or "")
+        match = _AGENT_COMMAND_TOKEN_RE.match(text)
+        if match is None:
+            return
+        name = match.group(1).lower()
+
+        bot_command = self._bot_commands.get(name)
+        if bot_command is not None:
+            # Telegram only builds a `bot_command` entity for message text, so a bot command written
+            # in a media caption never reaches its CommandHandler; dispatch it here instead of losing it.
+            await bot_command(update, context)
+            return
+
+        chat_id = self._chat_id(update)
+        commands = self._advertised_commands(chat_id=chat_id)
+        if not any(_command_name(command.name) == name for command in commands):
+            await self._reply(update, f"/{name} is not a command this agent advertises. See /cmds.")
+            return
+
+        forwarded = _without_own_mention(text, match, _bot_handle(context))
+        logger.info("Forwarding agent command on chat_id=%s text=%s", chat_id, log_text_preview(forwarded))
+        await self.on_message(update, context, prompt_text=forwarded)
+
+    async def on_agent_command_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Run the agent slash command behind a tapped `/cmds` button, or show the descriptions."""
+        query = update.callback_query
+        if query is None:
+            return
+        if not await self._require_access(update):
+            await query.answer("Access denied.")
+            return
+        chat_id = self._chat_id_from_update_or_query(update=update, query=query)
+        if chat_id is None:
+            await query.answer("Missing chat.")
+            return
+
+        commands = self._advertised_commands(chat_id=chat_id)
+        data = query.data or ""
+        if data == AGENT_COMMAND_KEYBOARD_INFO_CALLBACK_DATA:
+            await self._answer_commands_listing(update=update, query=query, commands=commands)
+            return
+        parts = data.split("|", maxsplit=1)
+        if len(parts) != AGENT_COMMAND_CALLBACK_PARTS or parts[0] != AGENT_COMMAND_CALLBACK_PREFIX:
+            await query.answer("Invalid action.")
+            return
+        name = parts[1]
+        if not any(_command_name(command.name) == name for command in commands):
+            # A keyboard printed before /new or /stop can outlive the session it came from.
+            await query.answer("This agent no longer advertises that command. Check /cmds.")
+            return
+        await query.answer(f"Running /{name}.")
+        logger.info("Forwarding tapped agent command on chat_id=%s text=/%s", chat_id, name)
+        await self.on_message(update, context, prompt_text=f"/{name}")
+
+    async def _answer_commands_listing(
+        self, *, update: Update, query: CallbackQuery, commands: tuple[AgentCommand, ...]
+    ) -> None:
+        """Send the plain description listing that the keyboard's info button asks for."""
+        if not commands:
+            await query.answer("No commands advertised any more.")
+            return
+        await query.answer("Showing descriptions.")
+        await self._reply(update, self._commands_listing(commands))
+
+    async def on_message(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+        *,
+        prompt_text: str | None = None,
+    ) -> None:
+        await self._record_group_message(update)
+
+        if not await self._require_access(update):
+            return
+
+        if await self._silently_shelve_group_message(update, context):
+            return
+
+        prompt_input = await self._prompt_input(update=update, context=context, text_override=prompt_text)
         if prompt_input is None:
             return
 
@@ -858,6 +1539,7 @@ class TelegramBridge:
             logger.info("Prompt received: %s", log_text_preview(prompt_input.text))
 
         if lock.locked():
+            await self._set_status_reaction(chat_id=chat_id, update=update, status=PromptStatus.QUEUED)
             await self._queue_busy_prompt(chat_id=chat_id, prompt_input=prompt_input, update=update)
             return
 
@@ -868,6 +1550,19 @@ class TelegramBridge:
                 context=context,
                 prompt_input=prompt_input,
             )
+
+    async def _set_status_reaction(self, *, chat_id: int, update: Update, status: PromptStatus) -> None:
+        """Mark the prompt message with the bot's own lifecycle reaction.
+
+        Reactions decorate the reply rather than carry it, so a headless bridge or a
+        message without an id is skipped instead of raising.
+        """
+        if self._app is None:
+            return
+        message_id = getattr(self._anchor_message(update), "message_id", None)
+        if message_id is None:
+            return
+        await self._status_reactions.set(bot=self._app.bot, chat_id=chat_id, message_id=message_id, status=status)
 
     async def _drain_prompt_queue(
         self,
@@ -883,6 +1578,7 @@ class TelegramBridge:
         while True:
             with bind_log_context(chat_id=chat_id, prompt_cycle_id=current_input.cycle_id):
                 logger.info("Prompt cycle started")
+                await self._set_status_reaction(chat_id=chat_id, update=current_update, status=PromptStatus.THINKING)
                 reply = await self._request_reply(
                     update=current_update,
                     context=context,
@@ -904,6 +1600,11 @@ class TelegramBridge:
                     await self._dispatch_reply(chat_id=chat_id, update=current_update, reply=reply)
                     with bind_log_context(chat_id=chat_id, prompt_cycle_id=current_input.cycle_id):
                         logger.info("Prompt cycle completed")
+                await self._set_status_reaction(
+                    chat_id=chat_id,
+                    update=current_update,
+                    status=PromptStatus.DONE if reply is not None else PromptStatus.ERROR,
+                )
                 await self._activity_handler(chat_id=chat_id).clear_chat_state(chat_id=chat_id)
 
                 if pending is None:
@@ -947,7 +1648,7 @@ class TelegramBridge:
         """
         app = self._app
         status_msg_id = self._compact_status_msg_id.pop(chat_id, None)
-        self._cancel_compact_animation(chat_id)
+        self._stop_compact_status(chat_id)
         self._compact_status_label.pop(chat_id, None)
         if status_msg_id is not None and app is not None:
             success = await TelegramBridge._edit_markdown_in_chat(
@@ -964,17 +1665,29 @@ class TelegramBridge:
         """Delete the in-progress compact status message if one exists."""
         app = self._app
         status_msg_id = self._compact_status_msg_id.pop(chat_id, None)
-        self._cancel_compact_animation(chat_id)
+        self._stop_compact_status(chat_id)
         self._compact_status_label.pop(chat_id, None)
         if status_msg_id is None or app is None:
             return
         with suppress(TelegramError):
             await app.bot.delete_message(chat_id=chat_id, message_id=status_msg_id)
 
-    def _cancel_compact_animation(self, chat_id: int) -> None:
+    def _close_compact_status_bubble(self, chat_id: int) -> None:
+        """End the compact status bubble without deleting it, so the next one opens fresh.
+
+        A question the user answers marks a turn in the conversation: the bubble that was showing
+        the pre-question work stays as history, and later activity and the final reply get their
+        own bubble instead of overwriting it.
+        """
+        self._compact_status_msg_id.pop(chat_id, None)
+        self._stop_compact_status(chat_id)
+        self._compact_status_label.pop(chat_id, None)
+
+    def _stop_compact_status(self, chat_id: int) -> None:
         task = self._compact_status_tasks.pop(chat_id, None)
         if task is not None:
             task.cancel()
+        self._compact_status_displayed.pop(chat_id, None)
 
     async def _set_activity_mode(self, *, chat_id: int, mode: ActivityMode) -> None:
         await self._clear_activity_mode_state(chat_id=chat_id)
@@ -990,33 +1703,56 @@ class TelegramBridge:
     def _activity_handler(self, *, chat_id: int) -> _ActivityModeHandler:
         return self._activity_handlers[self._activity_mode(chat_id=chat_id)]
 
-    def _ensure_compact_animation(self, *, chat_id: int, message_id: int) -> None:
+    def _ensure_compact_status_refresher(self, *, chat_id: int) -> None:
         task = self._compact_status_tasks.get(chat_id)
         if task is not None and not task.done():
             return
-        self._compact_status_tasks[chat_id] = asyncio.create_task(
-            self._animate_compact_status(chat_id=chat_id, message_id=message_id)
-        )
+        self._compact_status_tasks[chat_id] = asyncio.create_task(self._refresh_compact_status(chat_id=chat_id))
 
-    async def _animate_compact_status(self, *, chat_id: int, message_id: int) -> None:
-        """Rotate `. .. ...` on the active compact status message until cancelled."""
+    async def _refresh_compact_status(self, *, chat_id: int) -> None:
+        """Repaint the compact status message on a Telegram-safe cadence.
+
+        Activity events can arrive several times per second, while Telegram allows only about 20
+        messages a minute in a group, so each wait period applies at most one edit and a label
+        that has not changed is skipped entirely.
+        """
         app = self._app
         if app is None:
             return
-        dot_count = 1
-        while True:
-            await asyncio.sleep(0.6)
-            label = self._compact_status_label.get(chat_id)
-            current_msg_id = self._compact_status_msg_id.get(chat_id)
-            if label is None or current_msg_id != message_id:
-                return
-            dot_count = dot_count % 3 + 1
-            with suppress(TelegramError):
-                await app.bot.edit_message_text(
-                    chat_id=chat_id,
-                    message_id=message_id,
-                    text=f"{label}{'.' * dot_count}",
-                )
+        try:
+            while True:
+                await asyncio.sleep(COMPACT_STATUS_TICK_SECONDS)
+                base_text = self._compact_status_label.get(chat_id)
+                message_id = self._compact_status_msg_id.get(chat_id)
+                if base_text is None or message_id is None:
+                    return
+                if base_text == self._compact_status_displayed.get(chat_id):
+                    continue
+                try:
+                    await app.bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=base_text)
+                except BadRequest as exc:
+                    logger.warning("Compact status message on chat_id=%s disappeared: %s", chat_id, exc)
+                    self._compact_status_msg_id.pop(chat_id, None)
+                    self._compact_status_displayed.pop(chat_id, None)
+                    return
+                except TelegramError as exc:
+                    logger.warning(
+                        "Compact status edit failed on chat_id=%s message_id=%s: %s",
+                        chat_id,
+                        message_id,
+                        exc,
+                    )
+                else:
+                    self._compact_status_displayed[chat_id] = base_text
+                    logger.info(
+                        "Compact status updated in place on chat_id=%s message_id=%s text=%r",
+                        chat_id,
+                        message_id,
+                        base_text,
+                    )
+        finally:
+            if self._compact_status_tasks.get(chat_id) is asyncio.current_task():
+                self._compact_status_tasks.pop(chat_id, None)
 
     async def _start_implicit_session(self, *, update: Update, chat_id: int) -> bool:
         workspace = self._config.default_workspace
@@ -1028,16 +1764,28 @@ class TelegramBridge:
         )
         return started is not None
 
-    async def _prompt_input(self, *, update: Update, context: ContextTypes.DEFAULT_TYPE) -> _PromptInput | None:
-        message = update.message
+    async def _prompt_input(
+        self,
+        *,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+        text_override: str | None = None,
+    ) -> _PromptInput | None:
+        message = self._anchor_message(update)
         if message is None:
             return None
-        text = message.text or message.caption or ""
+        chat_id = self._chat_id(update)
+        text = text_override if text_override is not None else (message.text or message.caption or "")
         images = await self._extract_prompt_images(message=message, context=context)
         files = await self._extract_prompt_files(message=message, context=context)
         if not text and not images and not files:
             return None
-        return _PromptInput(chat_id=self._chat_id(update), text=text, images=images, files=files)
+        if getattr(update.effective_chat, "type", None) in GROUP_CHAT_TYPES:
+            text = _with_group_context(text, _sender_label(update.effective_user))
+        if self._config.group_media_queue:
+            pending = await self._agent_service.take_pending_media(chat_id=chat_id)
+            text = _with_pending_media(text, pending)
+        return _PromptInput(chat_id=chat_id, text=text, images=images, files=files)
 
     async def _ensure_session_for_chat(self, *, update: Update, chat_id: int) -> bool:
         if self._agent_service.get_workspace(chat_id=chat_id) is not None:
@@ -1145,7 +1893,7 @@ class TelegramBridge:
                     "text": BUSY_QUEUED_TEXT,
                     "reply_markup": keyboard,
                 }
-                queued_message = update.message
+                queued_message = self._anchor_message(update)
                 if queued_message is not None and isinstance(queued_message.message_id, int):
                     send_kwargs["reply_to_message_id"] = queued_message.message_id
                     send_kwargs["allow_sending_without_reply"] = True
@@ -1243,7 +1991,7 @@ class TelegramBridge:
             session_id=session_id,
         ):
             await context.bot.send_chat_action(chat_id=prompt_input.chat_id, action=ChatAction.TYPING)
-        source_message_id = getattr(update.message, "message_id", None)
+        source_message_id = getattr(self._anchor_message(update), "message_id", None)
         try:
             await self._set_prompt_message_context(
                 session_id=session_id,
@@ -1266,6 +2014,9 @@ class TelegramBridge:
                 "Agent output exceeded ACP stdio limit. Restart with a higher `--acp-stdio-limit` "
                 "(or `ACP_STDIO_LIMIT`).",
             )
+            return None
+        except AgentConnectionLostError:
+            await self._reply(update, "The agent died and could not be restarted. Try `/new` to start a session.")
             return None
         finally:
             await self._set_prompt_message_context(session_id=session_id, message_id=None)
@@ -1406,6 +2157,36 @@ class TelegramBridge:
             )
         return InlineKeyboardMarkup(rows)
 
+    async def _record_group_message(self, update: Update) -> None:
+        """Park one group message in the chat's capped history, ahead of every gate.
+
+        Recording runs before the allowlist and the mention rule, so the history the agent reads
+        back is the room as it happened rather than only the messages this bot chose to answer.
+        An edit rewrites the entry of the message it changed, so the log holds the last version of
+        anything the room saw once, which is how a compact answer that replaces its own status
+        bubble still reaches the agent.
+        """
+        cap = self._config.group_history_size
+        if cap <= 0:
+            return
+        chat = update.effective_chat
+        message = self._anchor_message(update)
+        if chat is None or message is None or getattr(chat, "type", None) not in GROUP_CHAT_TYPES:
+            return
+        text = message.text or message.caption or ""
+        if not text.strip():
+            return
+
+        user = update.effective_user
+        await self._agent_service.record_group_message(
+            chat_id=chat.id,
+            message_id=message.message_id,
+            sender_id=getattr(user, "id", None),
+            sender_name=_sender_label(user).removeprefix("@") or None,
+            text=text,
+            max_entries=cap,
+        )
+
     async def _require_access(self, update: Update) -> bool:
         allowed_ids = self._config.allowed_user_ids
         allowed_usernames = self._config.allowed_usernames
@@ -1422,7 +2203,119 @@ class TelegramBridge:
                 return True
 
         await self._reply(update, "Access denied for this bot.")
+        chat = update.effective_chat
+        logger.info(
+            "Blocked sender user_id=%s username=%s in chat=%s — add it to the allowlist to grant access",
+            user_id,
+            username_raw,
+            chat.id if chat is not None else None,
+        )
         return False
+
+    def _ignores_unmentioned_group_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+        """True when a group message must be skipped because it does not target the bot.
+
+        Implements {py:attr}`BotConfig.group_require_mention`: private chats always answer,
+        group chats only when the bot is @mentioned (or a person replies to the bot).
+
+        The anchor message is read rather than `update.message`, because a compact-mode answer
+        arrives as an edit of the status bubble and would otherwise look like an unaddressed post.
+
+        A reply only counts as an address when a person sent it. Every answer this bot posts is a
+        reply to the message that triggered it, so honouring the quote from a bot would let two
+        agents sustain a conversation on the quote alone — which is how a busy notification kept
+        redrawing the peer in a shared group.
+        """
+        chat = update.effective_chat
+        if getattr(chat, "type", None) not in GROUP_CHAT_TYPES:
+            return False
+
+        chat_id = chat.id if chat is not None else None
+        sender_is_bot = bool(getattr(update.effective_user, "is_bot", False))
+        if not sender_is_bot and chat_id is not None:
+            self._bot_turns_by_chat.pop(chat_id, None)
+            self._bot_budget_notified.discard(chat_id)
+
+        message = self._anchor_message(update)
+        handle = _bot_handle(context)
+        addressed = False
+        if message is not None and handle:
+            addressed = _mentions_handle(message, handle)
+            if not addressed and not sender_is_bot:
+                author = getattr(message.reply_to_message, "from_user", None)
+                replied_username = getattr(author, "username", None) or ""
+                addressed = replied_username.lstrip("@").strip().lower() == handle
+
+        if addressed and sender_is_bot and chat_id is not None and not self._reserve_bot_turn(chat_id):
+            return True
+        if addressed:
+            return False
+
+        logger.info("Group message in chat=%s ignored: no @%s mention", chat_id, handle)
+        return True
+
+    def _reserve_bot_turn(self, chat_id: int) -> bool:
+        """Spend one turn of the bot-to-bot budget, refusing the exchange once it is spent.
+
+        Two agents that address each other by name, as {py:data}`GROUP_MENTION_REMINDER` tells them
+        to, hand the conversation back and forth with no human in the loop. The budget bounds that
+        exchange without forbidding it, and the next person's message refills it.
+        """
+        used = self._bot_turns_by_chat.get(chat_id, 0)
+        if used >= GROUP_BOT_TURN_BUDGET:
+            logger.info("Group message in chat=%s ignored: bot-to-bot turn budget spent", chat_id)
+            return False
+        self._bot_turns_by_chat[chat_id] = used + 1
+        return True
+
+    async def _announce_bot_turn_hold(self, update: Update) -> None:
+        """Say once why the exchange stopped, since two bots going quiet looks like a hang."""
+        message = update.message
+        chat = update.effective_chat
+        if message is None or chat is None:
+            return
+        if self._bot_turns_by_chat.get(chat.id, 0) < GROUP_BOT_TURN_BUDGET:
+            return
+        if chat.id in self._bot_budget_notified:
+            return
+        self._bot_budget_notified.add(chat.id)
+        await self._reply(update, GROUP_BUDGET_HOLD_TEXT)
+
+    async def _silently_shelve_group_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+        """True when the mention rule hides this message, which is then queued or dropped without a reply.
+
+        Any handler that may answer a plain message has to consult this before saying anything, so an
+        unaddressed group post never draws the bot into the conversation.
+        """
+        # Tapping one of the bot's own buttons is an explicit address, so the mention rule never hides it.
+        if getattr(update, "callback_query", None) is not None:
+            return False
+        if not self._config.group_require_mention or not self._ignores_unmentioned_group_message(update, context):
+            return False
+        if self._config.group_media_queue:
+            await self._queue_unclaimed_group_media(update=update)
+        await self._announce_bot_turn_hold(update)
+        return True
+
+    async def _queue_unclaimed_group_media(self, *, update: Update) -> None:
+        """Keep a reference to group media that the mention gate drops, so it is not lost.
+
+        Only the Telegram `file_id` is stored; bytes are fetched later by the agent through
+        {py:func}`telegram_acp_bot.mcp.tools.attachments.telegram_fetch_attachment`.
+        """
+        chat = update.effective_chat
+        message = update.message
+        if chat is None or message is None:
+            return
+
+        for file_id, mime_type in _media_references(message):
+            await self._agent_service.record_pending_media(
+                chat_id=chat.id,
+                message_id=message.message_id,
+                file_id=file_id,
+                mime_type=mime_type,
+            )
+            logger.info("Queued unclaimed media file_id=%s from chat=%s", file_id[:12], chat.id)
 
     @staticmethod
     def _chat_id(update: Update) -> int:
@@ -1430,6 +2323,17 @@ class TelegramBridge:
         if chat is None:
             raise ChatRequiredError
         return chat.id
+
+    @staticmethod
+    def _anchor_message(update: Update) -> Message | None:
+        """Message a turn is anchored to: the inbound one, or the tapped one behind an inline button.
+
+        Reply delivery, status reactions and media extraction all hang off this message, so a prompt
+        that arrives as a callback query keeps working instead of vanishing on a missing `update.message`.
+        """
+        if update.message is not None:
+            return update.message
+        return cast(Message | None, getattr(update, "effective_message", None))
 
     @staticmethod
     def _chat_id_from_update_or_query(*, update: Update, query: object) -> int | None:
@@ -1578,9 +2482,10 @@ class TelegramBridge:
 
     @staticmethod
     async def _reply(update: Update, text: str) -> Message | None:
-        if update.message is None:
+        message = TelegramBridge._anchor_message(update)
+        if message is None:
             return None
-        return await TelegramBridge._reply_markdown_message(update.message, text=text)
+        return await TelegramBridge._reply_markdown_message(message, text=text)
 
     @staticmethod
     async def _reply_message(message: Message | None, text: str) -> Message | None:
@@ -1590,9 +2495,10 @@ class TelegramBridge:
 
     @staticmethod
     async def _reply_agent(update: Update, text: str) -> Message | None:
-        if update.message is None:
+        message = TelegramBridge._anchor_message(update)
+        if message is None:
             return None
-        return await TelegramBridge._reply_markdown_message(update.message, text=text)
+        return await TelegramBridge._reply_markdown_message(message, text=text)
 
     @staticmethod
     def _to_telegram_entity(entity: MarkdownMessageEntity) -> MessageEntity:
@@ -1609,11 +2515,12 @@ class TelegramBridge:
     async def _reply_activity_block(
         update: Update, block: AgentActivityBlock, *, workspace: Path | None = None
     ) -> None:
-        if update.message is None:
+        message = TelegramBridge._anchor_message(update)
+        if message is None:
             return
 
         text = TelegramBridge._format_activity_block(block, workspace=workspace)
-        await TelegramBridge._reply_markdown_message(update.message, text=text)
+        await TelegramBridge._reply_markdown_message(message, text=text)
 
     @staticmethod
     def _format_activity_block(block: AgentActivityBlock, *, workspace: Path | None = None) -> str:
@@ -1646,6 +2553,29 @@ class TelegramBridge:
         if TelegramBridge._search_source(block) == "web":
             return SEARCH_LABEL_WEB
         return SEARCH_LABEL_NEUTRAL
+
+    @staticmethod
+    def _compact_status_hint(block: AgentActivityBlock, *, workspace: Path | None) -> str:
+        """Return a one-line summary of an activity for the compact status message.
+
+        The normalized title is often multi-line (fenced commands, absolute paths); the status
+        line only has room for its first meaningful row, so collapse it, show paths relative to
+        the workspace, and cap the width.
+        """
+
+        title = TelegramBridge._normalize_activity_title(block, workspace=workspace)
+        for raw_line in title.splitlines():
+            line = raw_line.strip().strip("`").strip()
+            if not line:
+                continue
+            if workspace is not None and line.startswith("/"):
+                root = str(Path(workspace).resolve(strict=False)).rstrip("/")
+                if root and line.startswith(f"{root}/"):
+                    line = line[len(root) + 1 :]
+            if len(line) <= COMPACT_STATUS_HINT_CHARS:
+                return line
+            return f"{line[: COMPACT_STATUS_HINT_CHARS - 1].rstrip()}…"
+        return ""
 
     @staticmethod
     def _search_source(block: AgentActivityBlock) -> str | None:
@@ -2183,13 +3113,14 @@ class TelegramBridge:
 
     @staticmethod
     async def _send_image(update: Update, payload: ImagePayload) -> None:
-        if update.message is None:
+        message = TelegramBridge._anchor_message(update)
+        if message is None:
             return
 
         raw = base64.b64decode(payload.data_base64)
         extension = "jpg" if payload.mime_type == "image/jpeg" else "bin"
         input_file = InputFile(BytesIO(raw), filename=f"agent-image.{extension}")
-        await update.message.reply_photo(photo=input_file)
+        await message.reply_photo(photo=input_file)
 
     @staticmethod
     async def _send_image_to_chat(
@@ -2214,7 +3145,8 @@ class TelegramBridge:
 
     @staticmethod
     async def _send_file(update: Update, payload: FilePayload) -> None:
-        if update.message is None:
+        message = TelegramBridge._anchor_message(update)
+        if message is None:
             return
 
         if payload.text_content is not None:
@@ -2225,7 +3157,7 @@ class TelegramBridge:
             raw = b""
 
         input_file = InputFile(BytesIO(raw), filename=payload.name)
-        await update.message.reply_document(document=input_file)
+        await message.reply_document(document=input_file)
 
     @staticmethod
     async def _send_file_to_chat(

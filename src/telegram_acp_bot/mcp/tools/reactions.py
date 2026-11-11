@@ -5,10 +5,10 @@ from __future__ import annotations
 import unicodedata
 from collections.abc import Collection
 
-from mcp.server.fastmcp import FastMCP
 from telegram import Bot
 from telegram.constants import ReactionEmoji
 
+from telegram_acp_bot.mcp.compat import FastMCP
 from telegram_acp_bot.mcp.context import resolve_request_context
 
 STANDARD_REACTION_EMOJIS: Collection[str] = frozenset(member.value for member in ReactionEmoji)

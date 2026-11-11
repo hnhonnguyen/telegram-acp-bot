@@ -693,5 +693,104 @@ async def test_acp_client_unsupported_ext_methods_raise():
     client = make_client()
     with pytest.raises(RequestError):
         await client.ext_method("x", {})
-    with pytest.raises(RequestError):
-        await client.ext_notification("x", {})
+
+
+async def test_acp_client_ext_notification_silently_ignored():
+    client = make_client()
+    await client.ext_notification("_cognition.ai/agent_stopped", {})
+    await client.ext_notification("_cognition.ai/compaction", {})
+    await client.ext_notification("any/unknown", {})
+
+
+async def test_acp_client_reports_available_commands_with_hints():
+    reported: list[tuple[str, tuple[AgentCommand, ...]]] = []
+
+    async def allow_first(_: str, options: list[PermissionOption], tool_call: ToolCall) -> RequestPermissionResponse:
+        del options, tool_call
+        return RequestPermissionResponse(outcome=DeniedOutcome(outcome="cancelled"))
+
+    async def capture(session_id: str, commands: tuple[AgentCommand, ...]) -> None:
+        reported.append((session_id, commands))
+
+    client = _AcpClient(permission_decider=allow_first, commands_reporter=capture)
+
+    await client.session_update(
+        session_id="s-cmds",
+        update=update_available_commands(
+            [
+                AvailableCommand(name="goal", description="Set a goal", input={"hint": "<objective>"}),
+                AvailableCommand(name="deep-research", description="Research a topic"),
+            ]
+        ),
+    )
+
+    assert reported == [
+        (
+            "s-cmds",
+            (
+                AgentCommand(name="goal", description="Set a goal", hint="<objective>"),
+                AgentCommand(name="deep-research", description="Research a topic", hint=""),
+            ),
+        )
+    ]
+
+
+async def test_available_commands_without_a_reporter_are_dropped():
+    client = make_client()
+
+    await client.session_update(
+        session_id="s-cmds",
+        update=update_available_commands([AvailableCommand(name="goal", description="Set a goal")]),
+    )
+
+
+async def test_acp_client_hook_tool_calls_are_hidden_from_chat_activity():
+    events: list[AgentActivityBlock] = []
+
+    async def allow_first(_: str, options: list[PermissionOption], tool_call: ToolCall) -> RequestPermissionResponse:
+        del options, tool_call
+        return RequestPermissionResponse(outcome=DeniedOutcome(outcome="cancelled"))
+
+    async def capture_event(_: str, block: AgentActivityBlock) -> None:
+        events.append(block)
+
+    client = _AcpClient(permission_decider=allow_first, activity_reporter=capture_event)
+    session_id = "s-hook"
+    client.start_capture(session_id)
+
+    await client.session_update(
+        session_id=session_id,
+        update=ToolCallStart(
+            title="Ran hook: /opt/hooks/patina-prompt-submit.sh (user_prompt)",
+            tool_call_id="hook-1",
+            kind="other",
+            session_update="tool_call",
+        ),
+    )
+    await client.session_update(
+        session_id=session_id,
+        update=AgentMessageChunk(
+            content=text_block('{"hookSpecificOutput": {"additionalContext": "noise"}}'),
+            session_update="agent_message_chunk",
+        ),
+    )
+    await client.session_update(
+        session_id=session_id,
+        update=ToolCallProgress(
+            tool_call_id="hook-1",
+            title="Ran hook: /opt/hooks/patina-prompt-submit.sh (user_prompt)",
+            status="completed",
+            session_update="tool_call_update",
+        ),
+    )
+    await client.session_update(
+        session_id=session_id,
+        update=AgentMessageChunk(content=text_block("done"), session_update="agent_message_chunk"),
+    )
+
+    reply = await client.finish_capture(session_id)
+
+    assert all(not block.title.startswith("Ran hook") for block in events)
+    assert all(not block.title.startswith("Ran hook") for block in reply.activity_blocks)
+    assert "hookSpecificOutput" not in reply.text
+    assert "done" in reply.text

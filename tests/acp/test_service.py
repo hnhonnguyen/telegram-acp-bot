@@ -9,6 +9,7 @@ import signal
 from tests.acp.support import *
 
 PROMPT_MESSAGE_ID = 42
+GROUP_HISTORY_CAP = 200
 
 
 async def test_new_session_creates_missing_workspace(tmp_path: Path):
@@ -20,7 +21,7 @@ async def test_new_session_creates_missing_workspace(tmp_path: Path):
         del program, args, kwargs
         return process
 
-    def fake_connect(client, input_stream, output_stream):
+    def fake_connect(client, input_stream, output_stream, **kwargs):
         del input_stream, output_stream
         connection.client = client
         return connection
@@ -78,7 +79,7 @@ async def test_new_session_passes_stdio_limit_to_spawner(tmp_path: Path):
         limits.append(cast(int, kwargs["limit"]))
         return process
 
-    def fake_connect(client, input_stream, output_stream):
+    def fake_connect(client, input_stream, output_stream, **kwargs):
         del input_stream, output_stream
         conn = FakeConnection(session_id="s-limit")
         conn.client = client
@@ -104,7 +105,7 @@ async def test_new_session_times_out_when_agent_does_not_handshake(tmp_path: Pat
         del program, args, kwargs
         return process
 
-    def fake_connect(client, input_stream, output_stream):
+    def fake_connect(client, input_stream, output_stream, **kwargs):
         del client, input_stream, output_stream
         return connection
 
@@ -130,7 +131,7 @@ async def test_new_session_times_out_during_session_new(tmp_path: Path):
         del program, args, kwargs
         return process
 
-    def fake_connect(client, input_stream, output_stream):
+    def fake_connect(client, input_stream, output_stream, **kwargs):
         del client, input_stream, output_stream
         return connection
 
@@ -155,7 +156,7 @@ async def test_new_session_and_prompt(tmp_path: Path):
         del program, args, kwargs
         return process
 
-    def fake_connect(client, input_stream, output_stream):
+    def fake_connect(client, input_stream, output_stream, **kwargs):
         assert input_stream is process.stdin
         assert output_stream is process.stdout
         connection.client = client
@@ -192,7 +193,7 @@ async def test_load_session_and_supports_session_loading(tmp_path: Path):
         del program, args, kwargs
         return process
 
-    def fake_connect(client, input_stream, output_stream):
+    def fake_connect(client, input_stream, output_stream, **kwargs):
         del input_stream, output_stream
         connection.client = client
         return connection
@@ -221,7 +222,7 @@ async def test_service_passes_configured_mcp_servers_to_new_and_load_session(tmp
         del program, args, kwargs
         return process
 
-    def fake_connect(client, input_stream, output_stream):
+    def fake_connect(client, input_stream, output_stream, **kwargs):
         del input_stream, output_stream
         connection.client = client
         return connection
@@ -250,7 +251,7 @@ async def test_service_persists_channel_session_mapping(tmp_path: Path):
         del program, args, kwargs
         return process
 
-    def fake_connect(client, input_stream, output_stream):
+    def fake_connect(client, input_stream, output_stream, **kwargs):
         del input_stream, output_stream
         connection.client = client
         return connection
@@ -285,18 +286,26 @@ async def test_drop_channel_session_mapping_ignores_unknown_session(tmp_path: Pa
     assert load_last_session_id(state_file) == "known"
 
 
-async def test_set_last_channel_session_updates_state_file(tmp_path: Path):
+async def test_prompt_context_refreshes_the_last_session(tmp_path: Path):
+    """A turn in flight makes its session the one an attachment call falls back to."""
     state_file = tmp_path / "channel-state.json"
     service = AcpAgentService(SessionRegistry(), program="agent", args=[], channel_state_file=state_file)
 
-    await service._set_last_channel_session(session_id="latest")
+    await service.set_prompt_message_context(session_id="latest", message_id=PROMPT_MESSAGE_ID)
 
     assert load_last_session_id(state_file) == "latest"
 
 
-async def test_set_last_channel_session_without_state_file_is_noop():
-    service = AcpAgentService(SessionRegistry(), program="agent", args=[])
-    await service._set_last_channel_session(session_id="ignored")
+async def test_clearing_prompt_context_leaves_the_last_session_alone(tmp_path: Path):
+    """End-of-turn cleanup clears the message id without repointing the fallback."""
+    state_file = tmp_path / "channel-state.json"
+    service = AcpAgentService(SessionRegistry(), program="agent", args=[], channel_state_file=state_file)
+    await service.set_prompt_message_context(session_id="latest", message_id=PROMPT_MESSAGE_ID)
+
+    await service.set_prompt_message_context(session_id="latest", message_id=None)
+
+    assert load_prompt_message_id(state_file, "latest") is None
+    assert load_last_session_id(state_file) == "latest"
 
 
 async def test_set_prompt_message_context_updates_state_file(tmp_path: Path):
@@ -314,6 +323,66 @@ async def test_set_prompt_message_context_without_state_file_is_noop():
     await service.set_prompt_message_context(session_id="ignored", message_id=PROMPT_MESSAGE_ID)
 
 
+async def test_record_pending_media_then_take_it(tmp_path: Path):
+    state_file = tmp_path / "channel-state.json"
+    service = AcpAgentService(SessionRegistry(), program="agent", args=[], channel_state_file=state_file)
+
+    await service.record_pending_media(chat_id=9, message_id=PROMPT_MESSAGE_ID, file_id="f1", mime_type="image/jpeg")
+    refs = await service.take_pending_media(chat_id=9)
+
+    assert [ref["file_id"] for ref in refs] == ["f1"]
+    assert refs[0]["message_id"] == PROMPT_MESSAGE_ID
+    assert load_pending_media(state_file) == {}
+
+
+async def test_pending_media_helpers_without_state_file_are_noop(tmp_path: Path):
+    service = AcpAgentService(SessionRegistry(), program="agent", args=[])
+
+    await service.record_pending_media(chat_id=9, message_id=1, file_id="f1", mime_type=None)
+
+    assert await service.take_pending_media(chat_id=9) == ()
+    assert not (tmp_path / "channel-state.json").exists()
+
+
+async def test_record_group_message_then_read_it_back(tmp_path: Path):
+    state_file = tmp_path / "channel-state.json"
+    service = AcpAgentService(SessionRegistry(), program="agent", args=[], channel_state_file=state_file)
+
+    await service.record_group_message(
+        chat_id=9,
+        message_id=PROMPT_MESSAGE_ID,
+        sender_id=7,
+        sender_name="alice",
+        text="chuyện trong group",
+        max_entries=GROUP_HISTORY_CAP,
+    )
+    entries = await service.read_group_history(chat_id=9)
+
+    assert [entry["text"] for entry in entries] == ["chuyện trong group"]
+    assert entries[0]["message_id"] == PROMPT_MESSAGE_ID
+    assert entries[0]["sent_at"] != ""
+
+
+async def test_group_history_helpers_without_state_file_are_noop(tmp_path: Path):
+    service = AcpAgentService(SessionRegistry(), program="agent", args=[])
+
+    await service.record_group_message(
+        chat_id=9, message_id=1, sender_id=7, sender_name=None, text="x", max_entries=GROUP_HISTORY_CAP
+    )
+
+    assert await service.read_group_history(chat_id=9) == ()
+    assert not (tmp_path / "channel-state.json").exists()
+
+
+async def test_record_group_message_with_a_zero_cap_writes_nothing(tmp_path: Path):
+    state_file = tmp_path / "channel-state.json"
+    service = AcpAgentService(SessionRegistry(), program="agent", args=[], channel_state_file=state_file)
+
+    await service.record_group_message(chat_id=9, message_id=1, sender_id=7, sender_name=None, text="x", max_entries=0)
+
+    assert not state_file.exists()
+
+
 async def test_load_session_rejects_when_capability_is_false(tmp_path: Path):
     process = FakeProcess()
     connection = FakeConnection(supports_load_session=False)
@@ -322,7 +391,7 @@ async def test_load_session_rejects_when_capability_is_false(tmp_path: Path):
         del program, args, kwargs
         return process
 
-    def fake_connect(client, input_stream, output_stream):
+    def fake_connect(client, input_stream, output_stream, **kwargs):
         del client, input_stream, output_stream
         return connection
 
@@ -356,7 +425,7 @@ async def test_load_session_replaces_existing_and_shuts_down(tmp_path: Path):
         calls.append(process)
         return process
 
-    def fake_connect(client, input_stream, output_stream):
+    def fake_connect(client, input_stream, output_stream, **kwargs):
         del input_stream, output_stream
         connection = FakeConnection(supports_load_session=True)
         connection.client = client
@@ -385,7 +454,7 @@ async def test_load_session_times_out(tmp_path: Path):
         del program, args, kwargs
         return process
 
-    def fake_connect(client, input_stream, output_stream):
+    def fake_connect(client, input_stream, output_stream, **kwargs):
         del client, input_stream, output_stream
         return connection
 
@@ -426,7 +495,7 @@ async def test_list_resumable_sessions_supported_and_filtered(tmp_path: Path):
         del program, args, kwargs
         return process
 
-    def fake_connect(client, input_stream, output_stream):
+    def fake_connect(client, input_stream, output_stream, **kwargs):
         del client, input_stream, output_stream
         return connection
 
@@ -451,7 +520,7 @@ async def test_list_resumable_sessions_returns_none_when_not_supported(tmp_path:
         del program, args, kwargs
         return process
 
-    def fake_connect(client, input_stream, output_stream):
+    def fake_connect(client, input_stream, output_stream, **kwargs):
         del client, input_stream, output_stream
         return connection
 
@@ -474,7 +543,7 @@ async def test_list_resumable_sessions_live_without_list_support_returns_none(tm
         del program, args, kwargs
         return process
 
-    def fake_connect(client, input_stream, output_stream):
+    def fake_connect(client, input_stream, output_stream, **kwargs):
         del input_stream, output_stream
         connection.client = client
         return connection
@@ -506,7 +575,7 @@ async def test_list_resumable_sessions_uses_live_connection_branch(tmp_path: Pat
         del program, args, kwargs
         return process
 
-    def fake_connect(client, input_stream, output_stream):
+    def fake_connect(client, input_stream, output_stream, **kwargs):
         del input_stream, output_stream
         connection.client = client
         return connection
@@ -532,7 +601,7 @@ async def test_list_resumable_sessions_returns_none_when_session_capabilities_mi
         del program, args, kwargs
         return process
 
-    def fake_connect(client, input_stream, output_stream):
+    def fake_connect(client, input_stream, output_stream, **kwargs):
         del client, input_stream, output_stream
         return connection
 
@@ -560,7 +629,7 @@ async def test_prompt_wraps_stdio_limit_error(tmp_path: Path) -> None:
         del program, args, kwargs
         return process
 
-    def fake_connect(client, input_stream, output_stream):
+    def fake_connect(client, input_stream, output_stream, **kwargs):
         del input_stream, output_stream
         connection.client = client
         return connection
@@ -579,7 +648,7 @@ async def test_prompt_reraises_unrelated_value_error(tmp_path: Path) -> None:
         del program, args, kwargs
         return process
 
-    def fake_connect(client, input_stream, output_stream):
+    def fake_connect(client, input_stream, output_stream, **kwargs):
         del input_stream, output_stream
         connection.client = client
         return connection
@@ -598,7 +667,7 @@ async def test_prompt_resets_active_auto_approve_on_prompt_error(tmp_path: Path)
         del program, args, kwargs
         return process
 
-    def fake_connect(client, input_stream, output_stream):
+    def fake_connect(client, input_stream, output_stream, **kwargs):
         del input_stream, output_stream
         connection.client = client
         return connection
@@ -612,6 +681,166 @@ async def test_prompt_resets_active_auto_approve_on_prompt_error(tmp_path: Path)
     live = service._live_by_chat[1]
     assert live.next_prompt_auto_approve is False
     assert live.active_prompt_auto_approve is False
+
+
+def make_restart_fakes(
+    connections: list[FakeConnection],
+    processes: list[FakeProcess],
+):
+    """Spawner/connector pair handing out one process+connection per ACP start."""
+
+    async def fake_spawn(program: str, *args: str, **kwargs):
+        del program, args, kwargs
+        if not processes:
+            raise FileNotFoundError(AGENT_BINARY_MISSING_ERROR)
+        return processes.pop(0)
+
+    def fake_connect(client, input_stream, output_stream, **kwargs):
+        del input_stream, output_stream
+        connection = connections.pop(0)
+        connection.client = client
+        return connection
+
+    return fake_spawn, fake_connect
+
+
+async def test_prompt_revives_session_when_agent_dies_mid_turn(tmp_path: Path):
+    dying = ConnectionLossConnection(session_id="crash-session")
+    revived = FakeConnection(session_id="crash-session")
+    processes = [FakeProcess(), FakeProcess()]
+    spawn, connect = make_restart_fakes([dying, revived], processes)
+    service = AcpAgentService(SessionRegistry(), program="agent", args=[], spawner=spawn, connector=connect)
+    await service.new_session(chat_id=1, workspace=tmp_path)
+
+    reply = await service.prompt(chat_id=1, text="continue")
+
+    assert reply is not None and reply.text == AGENT_EXIT_NOTICE
+    # The half-finished turn is not replayed onto the fresh agent.
+    assert revived.prompt_calls == []
+    assert revived.load_session_mcp_servers == []
+    assert revived.cwd == str(tmp_path.resolve())
+    assert service._live_by_chat[1].acp_session_id == "crash-session"
+
+
+async def test_prompt_runs_on_revived_agent_when_agent_died_between_turns(tmp_path: Path):
+    dead = FakeConnection(session_id="exit-session")
+    first_process = FakeProcess()
+    revived = FakeConnection(session_id="exit-session")
+    processes = [first_process, FakeProcess()]
+    spawn, connect = make_restart_fakes([dead, revived], processes)
+    service = AcpAgentService(SessionRegistry(), program="agent", args=[], spawner=spawn, connector=connect)
+    await service.new_session(chat_id=1, workspace=tmp_path)
+    first_process.returncode = 137
+
+    reply = await service.prompt(chat_id=1, text="hello again")
+
+    assert reply is not None and reply.text == "hello from acp"
+    assert revived.prompt_calls == ["exit-session"]
+
+
+async def test_revive_starts_new_session_when_agent_cannot_load(tmp_path: Path):
+    dying = ConnectionLossConnection(session_id="crash-session")
+    # Two fresh agents take over: the one that refuses `session/load`, then the one that starts a session.
+    refuses_load = FakeConnection(session_id="crash-session", supports_load_session=False)
+    replacement = FakeConnection(session_id="replacement-session")
+    processes = [FakeProcess(), FakeProcess(), FakeProcess()]
+    spawn, connect = make_restart_fakes([dying, refuses_load, replacement], processes)
+    service = AcpAgentService(SessionRegistry(), program="agent", args=[], spawner=spawn, connector=connect)
+    await service.new_session(chat_id=1, workspace=tmp_path)
+
+    reply = await service.prompt(chat_id=1, text="continue")
+
+    assert reply is not None and reply.text == AGENT_EXIT_NOTICE
+    assert replacement.new_session_mcp_servers == []
+    assert service._live_by_chat[1].acp_session_id == "replacement-session"
+
+
+async def test_revive_raises_when_agent_cannot_be_restarted(tmp_path: Path):
+    dying = ConnectionLossConnection(session_id="crash-session")
+    processes = [FakeProcess()]
+    spawn, connect = make_restart_fakes([dying], processes)
+    service = AcpAgentService(SessionRegistry(), program="agent", args=[], spawner=spawn, connector=connect)
+    await service.new_session(chat_id=1, workspace=tmp_path)
+
+    with pytest.raises(AgentConnectionLostError):
+        await service.prompt(chat_id=1, text="continue")
+
+
+async def test_revive_keeps_chat_permission_mode(tmp_path: Path):
+    dying = ConnectionLossConnection(session_id="approve-session")
+    revived = FakeConnection(session_id="approve-session")
+    processes = [FakeProcess(), FakeProcess()]
+    spawn, connect = make_restart_fakes([dying, revived], processes)
+    service = AcpAgentService(SessionRegistry(), program="agent", args=[], spawner=spawn, connector=connect)
+    await service.new_session(chat_id=1, workspace=tmp_path)
+    await service.set_session_permission_mode(chat_id=1, mode="approve")
+
+    await service.prompt(chat_id=1, text="continue")
+
+    policy = service.get_permission_policy(chat_id=1)
+    assert policy is not None and policy.session_mode == "approve"
+
+
+async def test_revive_drops_permission_requests_of_the_dead_session(tmp_path: Path):
+    dying = ConnectionLossConnection(session_id="permission-session")
+    revived = FakeConnection(session_id="permission-session")
+    processes = [FakeProcess(), FakeProcess()]
+    spawn, connect = make_restart_fakes([dying, revived], processes)
+    service = AcpAgentService(SessionRegistry(), program="agent", args=[], spawner=spawn, connector=connect)
+    await service.new_session(chat_id=1, workspace=tmp_path)
+
+    future: asyncio.Future[RequestPermissionResponse] = asyncio.get_running_loop().create_future()
+    service._pending_permissions["req-1"] = _PendingPermission(
+        request_id="req-1",
+        chat_id=1,
+        acp_session_id="permission-session",
+        tool_title="run tests",
+        tool_call_id="call-1",
+        options=(),
+        future=future,
+    )
+    # Another chat's approval and an already answered one must survive this revive untouched.
+    other: asyncio.Future[RequestPermissionResponse] = asyncio.get_running_loop().create_future()
+    service._pending_permissions["req-other"] = _PendingPermission(
+        request_id="req-other",
+        chat_id=2,
+        acp_session_id="other-session",
+        tool_title="read file",
+        tool_call_id="call-2",
+        options=(),
+        future=other,
+    )
+    answered: asyncio.Future[RequestPermissionResponse] = asyncio.get_running_loop().create_future()
+    answered.set_result(RequestPermissionResponse(outcome=DeniedOutcome(outcome="cancelled")))
+    service._pending_permissions["req-answered"] = _PendingPermission(
+        request_id="req-answered",
+        chat_id=1,
+        acp_session_id="permission-session",
+        tool_title="read file",
+        tool_call_id="call-3",
+        options=(),
+        future=answered,
+    )
+
+    await service.prompt(chat_id=1, text="continue")
+
+    assert future.done()
+    assert future.result().outcome.outcome == "cancelled"
+    assert "req-1" not in service._pending_permissions
+    assert "req-other" in service._pending_permissions and not other.done()
+    assert "req-answered" in service._pending_permissions
+
+
+async def test_cancel_ignores_an_exited_agent(tmp_path: Path):
+    connection = FakeConnection(session_id="cancel-session")
+    process = FakeProcess()
+    spawn, connect = make_restart_fakes([connection], [process])
+    service = AcpAgentService(SessionRegistry(), program="agent", args=[], spawner=spawn, connector=connect)
+    await service.new_session(chat_id=1, workspace=tmp_path)
+    process.returncode = 1
+
+    assert await service.cancel(chat_id=1) is False
+    assert connection.prompt_calls == []
 
 
 async def test_prompt_resolves_file_uri_resource_as_image(tmp_path: Path):
@@ -631,7 +860,7 @@ async def test_prompt_resolves_file_uri_resource_as_image(tmp_path: Path):
         del program, args, kwargs
         return process
 
-    def fake_connect(client, input_stream, output_stream):
+    def fake_connect(client, input_stream, output_stream, **kwargs):
         del input_stream, output_stream
         connection.client = client
         return connection
@@ -663,7 +892,7 @@ async def test_prompt_resolves_file_uri_resource_as_document(tmp_path: Path):
         del program, args, kwargs
         return process
 
-    def fake_connect(client, input_stream, output_stream):
+    def fake_connect(client, input_stream, output_stream, **kwargs):
         del input_stream, output_stream
         connection.client = client
         return connection
@@ -696,7 +925,7 @@ async def test_prompt_reports_warning_for_outside_workspace_file_uri(tmp_path: P
         del program, args, kwargs
         return process
 
-    def fake_connect(client, input_stream, output_stream):
+    def fake_connect(client, input_stream, output_stream, **kwargs):
         del input_stream, output_stream
         connection.client = client
         return connection
@@ -728,7 +957,7 @@ async def test_prompt_resolves_percent_encoded_file_uri(tmp_path: Path):
         del program, args, kwargs
         return process
 
-    def fake_connect(client, input_stream, output_stream):
+    def fake_connect(client, input_stream, output_stream, **kwargs):
         del input_stream, output_stream
         connection.client = client
         return connection
@@ -749,7 +978,7 @@ async def test_cancel_and_stop_lifecycle(tmp_path: Path):
         del program, args, kwargs
         return process
 
-    def fake_connect(client, input_stream, output_stream):
+    def fake_connect(client, input_stream, output_stream, **kwargs):
         del input_stream, output_stream
         connection.client = client
         return connection
@@ -778,7 +1007,7 @@ async def test_permission_policy_session_and_next_prompt(tmp_path: Path):
         del program, args, kwargs
         return process
 
-    def fake_connect(client, input_stream, output_stream):
+    def fake_connect(client, input_stream, output_stream, **kwargs):
         del input_stream, output_stream
         connection.client = client
         return connection
@@ -826,7 +1055,7 @@ async def test_decide_permission_states(tmp_path: Path):
         del program, args, kwargs
         return process
 
-    def fake_connect(client, input_stream, output_stream):
+    def fake_connect(client, input_stream, output_stream, **kwargs):
         del input_stream, output_stream
         connection.client = client
         return connection
@@ -875,7 +1104,7 @@ async def test_decide_permission_ask_mode_with_handler(tmp_path: Path):
         del program, args, kwargs
         return process
 
-    def fake_connect(client, input_stream, output_stream):
+    def fake_connect(client, input_stream, output_stream, **kwargs):
         del input_stream, output_stream
         connection.client = client
         return connection
@@ -911,7 +1140,7 @@ async def test_respond_permission_request_always_enables_session_approve(tmp_pat
         del program, args, kwargs
         return process
 
-    def fake_connect(client, input_stream, output_stream):
+    def fake_connect(client, input_stream, output_stream, **kwargs):
         del input_stream, output_stream
         connection.client = client
         return connection
@@ -970,7 +1199,7 @@ async def test_decide_permission_auto_approve_supports_allow_always_only(tmp_pat
         del program, args, kwargs
         return process
 
-    def fake_connect(client, input_stream, output_stream):
+    def fake_connect(client, input_stream, output_stream, **kwargs):
         del input_stream, output_stream
         connection.client = client
         return connection
@@ -1000,7 +1229,7 @@ async def test_stop_cancels_pending_permission_requests(tmp_path: Path):
         del program, args, kwargs
         return process
 
-    def fake_connect(client, input_stream, output_stream):
+    def fake_connect(client, input_stream, output_stream, **kwargs):
         del input_stream, output_stream
         connection.client = client
         return connection
@@ -1040,7 +1269,7 @@ async def test_decide_permission_timeout_returns_cancelled(tmp_path: Path, monke
         del program, args, kwargs
         return process
 
-    def fake_connect(client, input_stream, output_stream):
+    def fake_connect(client, input_stream, output_stream, **kwargs):
         del input_stream, output_stream
         connection.client = client
         return connection
@@ -1128,7 +1357,7 @@ async def test_forward_activity_event_routes_to_matching_chat(tmp_path: Path):
         del program, args, kwargs
         return process
 
-    def fake_connect(client, input_stream, output_stream):
+    def fake_connect(client, input_stream, output_stream, **kwargs):
         del input_stream, output_stream
         connection.client = client
         return connection
@@ -1162,7 +1391,7 @@ async def test_new_session_replaces_previous_and_shuts_down(tmp_path: Path, monk
         calls.append(process)
         return process
 
-    def fake_connect(client, input_stream, output_stream):
+    def fake_connect(client, input_stream, output_stream, **kwargs):
         del input_stream, output_stream
         conn = FakeConnection(session_id=f"s-{len(calls)}")
         conn.client = client
@@ -1209,7 +1438,7 @@ async def test_new_session_passes_start_new_session_to_spawner(tmp_path: Path):
         spawn_kwargs.append(dict(kwargs))
         return process
 
-    def fake_connect(client, input_stream, output_stream):
+    def fake_connect(client, input_stream, output_stream, **kwargs):
         del input_stream, output_stream
         conn = FakeConnection(session_id="s")
         conn.client = client
@@ -1477,3 +1706,76 @@ async def test_log_text_preview_compacts_and_truncates():
     assert len(preview) == LOG_TEXT_PREVIEW_MAX_CHARS + 3
 
     assert log_text_preview("   ") == "<empty>"
+
+
+def _commands_service(connection: CommandsConnection) -> AcpAgentService:
+    async def fake_spawn(program: str, *args: str, **kwargs):
+        del program, args, kwargs
+        return FakeProcess()
+
+    def fake_connect(client, input_stream, output_stream, **kwargs):
+        del input_stream, output_stream
+        connection.client = client
+        return connection
+
+    return AcpAgentService(
+        SessionRegistry(),
+        program="agent",
+        args=[],
+        spawner=fake_spawn,
+        connector=fake_connect,
+    )
+
+
+async def test_available_commands_update_is_captured_and_exposed_per_chat(tmp_path: Path):
+    service = _commands_service(CommandsConnection(session_id="cmds-session"))
+    assert service.get_available_commands(chat_id=7) is None
+
+    await service.new_session(chat_id=7, workspace=tmp_path)
+
+    commands = service.get_available_commands(chat_id=7)
+    assert commands is not None
+    assert [(command.name, command.description, command.hint) for command in commands] == [
+        ("goal", "Set or manage a persistent goal", "<objective> | status"),
+        ("deep-research", "Research a topic", ""),
+    ]
+    assert service.get_available_commands(chat_id=8) is None
+
+
+async def test_available_commands_are_replaced_by_the_latest_advertisement(tmp_path: Path):
+    service = _commands_service(ReadvertiseCommandsConnection(session_id="cmds-session"))
+    await service.new_session(chat_id=7, workspace=tmp_path)
+
+    commands = service.get_available_commands(chat_id=7)
+    assert commands is not None
+    assert [command.name for command in commands] == ["goal", "deep-research"]
+
+    await service.prompt(chat_id=7, text="hello")
+
+    commands = service.get_available_commands(chat_id=7)
+    assert commands is not None
+    assert [(command.name, command.description, command.hint) for command in commands] == [
+        ("extra-1", "Command added on prompt 1", "<target>"),
+    ]
+
+    await service.prompt(chat_id=7, text="hello again")
+
+    commands = service.get_available_commands(chat_id=7)
+    assert commands is not None
+    assert [command.name for command in commands] == ["extra-2"]
+
+
+async def test_available_commands_are_cleared_when_the_session_stops(tmp_path: Path):
+    service = _commands_service(CommandsConnection(session_id="cmds-session"))
+    await service.new_session(chat_id=7, workspace=tmp_path)
+    assert service.get_available_commands(chat_id=7)
+
+    await service.new_session(chat_id=7, workspace=tmp_path)
+    assert service.get_available_commands(chat_id=7)
+
+    await service.load_session(chat_id=7, session_id="loaded-session", workspace=tmp_path)
+    assert service.get_available_commands(chat_id=7) == ()
+
+    await service.new_session(chat_id=7, workspace=tmp_path)
+    await service.stop(chat_id=7)
+    assert service.get_available_commands(chat_id=7) is None

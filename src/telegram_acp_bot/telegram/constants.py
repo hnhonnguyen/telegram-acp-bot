@@ -6,19 +6,27 @@ PERMISSION_CALLBACK_PREFIX = "perm"
 RESUME_CALLBACK_PREFIX = "resume"
 BUSY_CALLBACK_PREFIX = "busy"
 SCHEDULED_CALLBACK_PREFIX = "scheduled"
+AGENT_COMMAND_CALLBACK_PREFIX = "cmd"
+ELICITATION_CALLBACK_PREFIX = "ask"
 PERMISSION_CALLBACK_PARTS = 3
 RESUME_CALLBACK_PARTS = 2
 BUSY_CALLBACK_PARTS = 2
 SCHEDULED_CALLBACK_PARTS = 3
+AGENT_COMMAND_CALLBACK_PARTS = 2
+ELICITATION_CALLBACK_PARTS = 3
 BUSY_SENT_TEXT = "✅ Sent."
 BUSY_QUEUED_TEXT = "⏳ Agent is busy. Your message is queued."
 BUSY_STILL_QUEUED_TEXT = "Still queued."
+# How many answers one bot may draw out of another in one group before a human has to speak again.
+GROUP_BOT_TURN_BUDGET = 8
+GROUP_BUDGET_HOLD_TEXT = "⏸️ Pausing the bot-to-bot exchange here — a human message resumes it."
 MAX_RESUME_ARGS = 1
 MAX_RESTART_ARGS = 2
 RESUME_KEYBOARD_MAX_ROWS = 10
 SCHEDULED_KEYBOARD_MAX_ROWS = 10
 RESTART_EXIT_CODE = 75
 TELEGRAM_MAX_UTF16_MESSAGE_LENGTH = 4096
+TELEGRAM_UNCHANGED_MESSAGE_ERROR = "message is not modified"
 BOT_COMMANDS: tuple[tuple[str, str], ...] = (
     ("start", "Start or resume in the default workspace"),
     ("new", "Create a new agent session [workspace]"),
@@ -31,6 +39,7 @@ BOT_COMMANDS: tuple[tuple[str, str], ...] = (
     ("stop", "Stop the current session"),
     ("clear", "Clear the current session"),
     ("restart", "Restart the bot [N [workspace]]"),
+    ("cmds", "List the slash commands this agent advertises"),
     ("help", "Show available commands"),
 )
 SCHEDULE_COMMAND_USAGE = (
@@ -55,3 +64,24 @@ SEARCH_LABEL_NEUTRAL = "🔎 Querying"
 REPLY_LABEL = "✍️ Replying"
 ACTIVITY_MODE_CHOICES: tuple[str, ...] = ("normal", "compact", "verbose")
 ACTIVITY_MODE_HELP = "normal, compact, or verbose"
+COMPACT_STATUS_HINT_CHARS = 60
+COMPACT_STATUS_TICK_SECONDS = 4.0
+AGENT_COMMAND_DESCRIPTION_CHARS = 100
+AGENT_COMMAND_KEYBOARD_COLUMNS = 3
+AGENT_COMMAND_KEYBOARD_MAX_ROWS = 15
+AGENT_COMMAND_KEYBOARD_INFO_CALLBACK_DATA = "cmd|*"
+AGENT_COMMAND_KEYBOARD_INFO_LABEL = "📖 What each command does"
+ELICITATION_KEYBOARD_COLUMNS = 2
+ELICITATION_FORMS_MAX = 8
+ELICITATION_OPTION_LABEL_CHARS = 40
+ELICITATION_SELECTED_PREFIX = "✓ "
+ELICITATION_SKIP_TOKEN = "x"
+ELICITATION_SKIP_LABEL = "⏭️ Skip this question"
+ELICITATION_SUBMIT_TOKEN = "s"
+ELICITATION_SUBMIT_LABEL = "✅ Send my answer"
+ELICITATION_ANSWER_RECORD_PREFIX = "✅ Answer:"
+ELICITATION_ANSWER_JOINER = " / "
+ELICITATION_SKIP_RECORD = "⏭️ Skipped."
+# Telegram clears an inline keyboard only when an explicitly empty one is set, and PTB serializes an
+# empty InlineKeyboardMarkup to {}, which it reads as "change nothing".
+ELICITATION_REMOVED_KEYBOARD: dict[str, object] = {"reply_markup": {"inline_keyboard": []}}

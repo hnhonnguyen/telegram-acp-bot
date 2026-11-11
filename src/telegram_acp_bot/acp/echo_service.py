@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 
 from telegram_acp_bot.acp.models import (
     AgentActivityBlock,
     AgentReply,
+    ElicitationRequest,
     PermissionDecisionAction,
     PermissionMode,
     PermissionPolicy,
@@ -24,6 +25,8 @@ class EchoAgentService:
         self._registry = registry
         self._session_permission_mode: dict[int, PermissionMode] = {}
         self._next_prompt_auto_approve: dict[int, bool] = {}
+        self._pending_media: dict[int, list[dict[str, object]]] = {}
+        self._group_history: dict[int, list[dict[str, object]]] = {}
         self._permission_prompt_handler: Callable[[PermissionRequest], Awaitable[None]] | None = None
         self._activity_event_handler: Callable[[int, AgentActivityBlock], Awaitable[None]] | None = None
 
@@ -103,6 +106,56 @@ class EchoAgentService:
     async def clear(self, *, chat_id: int) -> bool:
         return await self.stop(chat_id=chat_id)
 
+    async def record_pending_media(
+        self,
+        *,
+        chat_id: int,
+        message_id: int,
+        file_id: str,
+        mime_type: str | None,
+    ) -> None:
+        ref: dict[str, object] = {
+            "file_id": file_id,
+            "message_id": message_id,
+            "mime_type": mime_type,
+            "queued_at": "echo",
+        }
+        self._pending_media.setdefault(chat_id, []).append(ref)
+
+    async def take_pending_media(self, *, chat_id: int) -> tuple[dict[str, object], ...]:
+        return tuple(self._pending_media.pop(chat_id, []))
+
+    async def record_group_message(  # noqa: PLR0913
+        self,
+        *,
+        chat_id: int,
+        message_id: int,
+        sender_id: int | None,
+        sender_name: str | None,
+        text: str,
+        max_entries: int,
+    ) -> None:
+        if max_entries <= 0:
+            return
+        entries = self._group_history.setdefault(chat_id, [])
+        entry: dict[str, object] = {
+            "message_id": message_id,
+            "sender_id": sender_id,
+            "sender_name": sender_name,
+            "text": text,
+            "sent_at": "echo",
+        }
+        for index, stored in enumerate(entries):
+            if stored["message_id"] == message_id:
+                entries[index] = entry
+                break
+        else:
+            entries.append(entry)
+        self._group_history[chat_id] = entries[-max_entries:]
+
+    async def read_group_history(self, *, chat_id: int) -> tuple[dict[str, object], ...]:
+        return tuple(self._group_history.get(chat_id, []))
+
     def get_permission_policy(self, *, chat_id: int) -> PermissionPolicy | None:
         if self._registry.get(chat_id) is None:
             return None
@@ -134,6 +187,28 @@ class EchoAgentService:
         handler: Callable[[int, AgentActivityBlock], Awaitable[None]] | None,
     ) -> None:
         self._activity_event_handler = handler
+
+    def set_elicitation_request_handler(
+        self,
+        handler: Callable[[ElicitationRequest], Awaitable[None]] | None,
+    ) -> None:
+        del handler
+
+    def set_elicitation_expiry_handler(
+        self,
+        handler: Callable[[int, str], Awaitable[None]] | None,
+    ) -> None:
+        del handler
+
+    async def respond_elicitation_request(
+        self,
+        *,
+        chat_id: int,
+        request_id: str,
+        answers: Mapping[str, tuple[str, ...]] | None,
+    ) -> bool:
+        del chat_id, request_id, answers
+        return False
 
     async def respond_permission_request(
         self,

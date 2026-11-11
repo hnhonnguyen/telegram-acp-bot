@@ -7,6 +7,7 @@ A Telegram bot that implements Agent Client Protocol to interact with AI agents.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import logging
 import os
 import shlex
@@ -15,28 +16,17 @@ from importlib import metadata
 from pathlib import Path
 from typing import Any, cast
 
-from acp.schema import EnvVariable, HttpHeader, HttpMcpServer, McpServerStdio
-from dotenv import load_dotenv
-
 from telegram_acp_bot.acp.models import ActivityMode, PermissionEventOutput, PermissionMode
-from telegram_acp_bot.acp.service import AcpAgentService
-from telegram_acp_bot.config_file import ConfigFileError, load_config_file
-from telegram_acp_bot.core.session_registry import SessionRegistry
+from telegram_acp_bot.agent_config import agent_tokens, resolve_specs
+from telegram_acp_bot.agent_identity import DEFAULT_AGENT_NAME
+from telegram_acp_bot.config_file import ConfigFileError, discover_config_path, load_config_file
+from telegram_acp_bot.instance import BotInstanceSpec, build_bot_instance
 from telegram_acp_bot.logging_context import configure_logging
-from telegram_acp_bot.mcp.state import STATE_FILE_ENV, TOKEN_ENV, default_state_file
+from telegram_acp_bot.mcp.state import MAX_GROUP_HISTORY_PER_CHAT, resolve_state_file
 from telegram_acp_bot.register_commands import add_register_commands_subparser
-from telegram_acp_bot.scheduled_tasks import (
-    ACP_SCHEDULED_TASKS_DB_ENV,
-    ScheduledTaskRunner,
-    ScheduledTaskScheduler,
-    ScheduledTaskStore,
-    default_scheduled_tasks_db_path,
-)
-from telegram_acp_bot.telegram.bot import RESTART_EXIT_CODE, BotConfig, TelegramBridge, make_config, run_polling
-
-ALLOWED_USER_IDS_ENV = "TELEGRAM_ALLOWED_USER_IDS"
-ALLOWED_USERNAMES_ENV = "TELEGRAM_ALLOWED_USERNAMES"
-SCHEDULE_LANGUAGES_ENV = "ACP_SCHEDULE_LANGUAGES"
+from telegram_acp_bot.runner import run_bot
+from telegram_acp_bot.scheduled_tasks import default_scheduled_tasks_db_path
+from telegram_acp_bot.telegram.bot import StatusReactionLevel
 
 
 def get_version() -> str:
@@ -59,15 +49,33 @@ def get_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="PATH",
         help=(
-            "Path to a JSON config file. If not provided, the bot will automatically "
-            "look for config files in standard locations. Values are overridden by "
-            "environment variables and CLI flags. See docs for the full schema."
+            "Path to a JSON config file. If not provided, the bot looks for config files in "
+            "standard locations. Values are overridden by CLI flags. See docs for the full schema."
         ),
     )
-    parser.add_argument("--telegram-token", default=os.getenv("TELEGRAM_BOT_TOKEN", ""), help="Telegram bot token")
+    parser.add_argument("--telegram-token", default="", help="Telegram bot token")
+    parser.add_argument(
+        "--telegram-api-id",
+        default=None,
+        type=int,
+        help=(
+            "Telegram API id from my.telegram.org; enables MTProto file transfers beyond the "
+            "Bot API limits (`telegram_download_file` for files over 20 MB, `telegram_send_attachment` "
+            "for uploads over 50 MB, up to 2 GB). "
+            "Also set by `telegram.api_id`; pair it with --telegram-api-hash."
+        ),
+    )
+    parser.add_argument(
+        "--telegram-api-hash",
+        default="",
+        help=(
+            "Telegram API hash from my.telegram.org; required together with --telegram-api-id. "
+            "Also set by `telegram.api_hash`."
+        ),
+    )
     parser.add_argument(
         "--agent-command",
-        default=os.getenv("ACP_AGENT_COMMAND", ""),
+        default="",
         help="ACP agent command line, e.g. 'codex-acp' or 'uv run examples/echo_agent.py'.",
     )
     parser.add_argument(
@@ -84,6 +92,24 @@ def get_parser() -> argparse.ArgumentParser:
         help="Allowed Telegram username (with or without @). Can be repeated.",
     )
     parser.add_argument(
+        "--agent",
+        action="append",
+        default=[],
+        metavar="NAME=COMMAND",
+        help=(
+            "Declare or override the ACP command line of one agent, repeatable: "
+            "--agent qoder='qodercli --acp' --agent claude=claude-code-acp. Each name is a "
+            "separate bot, so give it its own telegram.bot_token under agents.<name>."
+        ),
+    )
+    parser.add_argument(
+        "--only",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help="Run just the named agent(s) of the declared set. Can be repeated.",
+    )
+    parser.add_argument(
         "--workspace",
         default=os.getcwd(),
         help="Default workspace path for /new when path is not provided.",
@@ -98,43 +124,43 @@ def get_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--permission-mode",
-        default=os.getenv("ACP_PERMISSION_MODE", "ask"),
+        default="ask",
         choices=["ask", "approve", "deny"],
         help="Default ACP permission mode.",
     )
     parser.add_argument(
         "--permission-event-output",
-        default=os.getenv("ACP_PERMISSION_EVENT_OUTPUT", "stdout"),
+        default="stdout",
         choices=["stdout", "off"],
         help="Where ACP permission/tool event logs are emitted.",
     )
     parser.add_argument(
         "--acp-stdio-limit",
-        default=int(os.getenv("ACP_STDIO_LIMIT", "8388608")),
+        default=8388608,
         type=int,
         help="Asyncio StreamReader limit in bytes for ACP stdio transport.",
     )
     parser.add_argument(
         "--acp-connect-timeout",
-        default=float(os.getenv("ACP_CONNECT_TIMEOUT", "30")),
+        default=30.0,
         type=float,
         help="Timeout in seconds for ACP initialize/new_session handshake.",
     )
     parser.add_argument(
         "--restart-command",
-        default=os.getenv("ACP_RESTART_COMMAND", ""),
+        default="",
         help="Optional command used by /restart to relaunch the bot (e.g. 'uv run telegram-acp-bot').",
     )
     parser.add_argument(
         "--log-format",
-        default=os.getenv("ACP_LOG_FORMAT", "text"),
+        default="text",
         choices=["text", "json"],
         help="Application log format.",
     )
     parser.add_argument(
         "-m",
         "--activity-mode",
-        default=os.getenv("ACP_ACTIVITY_MODE", "normal"),
+        default="normal",
         choices=["compact", "normal", "verbose"],
         help=(
             "Activity display mode. "
@@ -145,55 +171,52 @@ def get_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--group-require-mention",
+        action="store_true",
+        default=False,
+        help=(
+            "Ignore group messages that do not @mention the bot (or reply to one of its messages). "
+            "Private chats are always answered. Also set by `telegram.group_require_mention`."
+        ),
+    )
+    parser.add_argument(
+        "--group-media-queue",
+        action="store_true",
+        default=False,
+        help=(
+            "Keep group media that the mention gate ignores as file_id references, then announce them "
+            "on the next accepted prompt so the agent can download only what it needs. "
+            "Also set by `telegram.group_media_queue`."
+        ),
+    )
+    parser.add_argument(
+        "--group-history-size",
+        type=int,
+        default=MAX_GROUP_HISTORY_PER_CHAT,
+        help=(
+            "How many recent group messages to keep per chat for the `telegram_list_messages` tool. "
+            f"Default {MAX_GROUP_HISTORY_PER_CHAT}; 0 disables the history log. "
+            "Also set by `telegram.group_history_size`."
+        ),
+    )
+    parser.add_argument(
+        "--status-reactions",
+        default="off",
+        choices=["off", "minimal"],
+        help=(
+            "React on the prompt message with the bot's own lifecycle emoji. "
+            "'off' (default) adds no bot reactions; the agent can still react through its MCP tool. "
+            "'minimal' marks 👀 while the chat is busy, 🤔 while the agent works, then 👍 or 💔 "
+            "when the cycle ends. "
+            "Also set by `telegram.status_reactions`."
+        ),
+    )
+    parser.add_argument(
         "--scheduled-tasks-db",
-        default=os.getenv(ACP_SCHEDULED_TASKS_DB_ENV, str(default_scheduled_tasks_db_path())),
+        default=str(default_scheduled_tasks_db_path()),
         help="SQLite database path used for deferred scheduled follow-ups.",
     )
     return parser
-
-
-def _default_mcp_servers(
-    *,
-    telegram_token: str,
-    state_file: Path,
-    scheduled_tasks_db: Path,
-    extra_servers: dict[str, Any] | None = None,
-) -> tuple[McpServerStdio | HttpMcpServer, ...]:
-    """Return MCP servers to expose to the ACP agent.
-
-    Always includes the internal ``telegram-channel`` server.
-    External servers from the config file are added after it, except when an
-    external ``telegram-channel`` definition overrides the internal one. In
-    that case, the external server replaces the internal entry and keeps its
-    position in the resulting tuple.
-    """
-    internal = McpServerStdio(
-        name="telegram-channel",
-        command=sys.executable,
-        args=["-m", "telegram_acp_bot.mcp.server"],
-        env=[
-            EnvVariable(name=TOKEN_ENV, value=telegram_token),
-            EnvVariable(name=STATE_FILE_ENV, value=str(state_file)),
-            EnvVariable(name=ACP_SCHEDULED_TASKS_DB_ENV, value=str(scheduled_tasks_db)),
-        ],
-    )
-    servers: dict[str, McpServerStdio | HttpMcpServer] = {"telegram-channel": internal}
-    for name, defn in (extra_servers or {}).items():
-        if "command" in defn:
-            servers[name] = McpServerStdio(
-                name=name,
-                command=defn["command"],
-                args=defn.get("args", []),
-                env=[EnvVariable(name=k, value=v) for k, v in defn.get("env", {}).items()],
-            )
-        else:
-            servers[name] = HttpMcpServer(
-                name=name,
-                url=defn["url"],
-                headers=[HttpHeader(name=k, value=v) for k, v in defn.get("headers", {}).items()],
-                type="http",
-            )
-    return tuple(servers.values())
 
 
 def _apply_config_file_defaults(
@@ -202,37 +225,39 @@ def _apply_config_file_defaults(
 ) -> None:
     """Apply config file values as parser-level defaults.
 
-    Only takes effect when the corresponding environment variable is not set.
     CLI flags always take precedence over these defaults.
     """
     tg = config.get("telegram", {})
     acp_cfg = config.get("acp", {})
     updates: dict[str, object] = {}
 
-    # String settings: env var > config file > hardcoded default in add_argument
-    _str_map: list[tuple[str, str, Any]] = [
-        ("telegram_token", "TELEGRAM_BOT_TOKEN", tg.get("bot_token")),
-        ("agent_command", "ACP_AGENT_COMMAND", acp_cfg.get("agent_command")),
-        ("restart_command", "ACP_RESTART_COMMAND", acp_cfg.get("restart_command")),
-        ("permission_mode", "ACP_PERMISSION_MODE", acp_cfg.get("permission_mode")),
-        ("permission_event_output", "ACP_PERMISSION_EVENT_OUTPUT", acp_cfg.get("permission_event_output")),
-        ("log_format", "ACP_LOG_FORMAT", acp_cfg.get("log_format")),
-        ("activity_mode", "ACP_ACTIVITY_MODE", acp_cfg.get("activity_mode")),
-        ("scheduled_tasks_db", ACP_SCHEDULED_TASKS_DB_ENV, acp_cfg.get("scheduled_tasks_db")),
+    # String settings: config file > hardcoded default in add_argument
+    _str_map: list[tuple[str, Any]] = [
+        ("telegram_token", tg.get("bot_token")),
+        ("telegram_api_id", tg.get("api_id")),
+        ("telegram_api_hash", tg.get("api_hash")),
+        ("agent_command", acp_cfg.get("agent_command")),
+        ("restart_command", acp_cfg.get("restart_command")),
+        ("permission_mode", acp_cfg.get("permission_mode")),
+        ("permission_event_output", acp_cfg.get("permission_event_output")),
+        ("log_format", acp_cfg.get("log_format")),
+        ("activity_mode", acp_cfg.get("activity_mode")),
+        ("status_reactions", tg.get("status_reactions")),
+        ("scheduled_tasks_db", acp_cfg.get("scheduled_tasks_db")),
     ]
-    updates |= {
-        dest: cfg_val for dest, env_name, cfg_val in _str_map if not os.getenv(env_name) and cfg_val is not None
-    }
+    updates |= {dest: cfg_val for dest, cfg_val in _str_map if cfg_val is not None}
 
-    # workspace has no env var
+    # workspace has no other source than config or the flag
     if "workspace" in acp_cfg:
         updates["workspace"] = acp_cfg["workspace"]
 
     # Numeric settings
-    if not os.getenv("ACP_STDIO_LIMIT") and "stdio_limit" in acp_cfg:
+    if "stdio_limit" in acp_cfg:
         updates["acp_stdio_limit"] = int(acp_cfg["stdio_limit"])
-    if not os.getenv("ACP_CONNECT_TIMEOUT") and "connect_timeout" in acp_cfg:
+    if "connect_timeout" in acp_cfg:
         updates["acp_connect_timeout"] = float(acp_cfg["connect_timeout"])
+    if "group_history_size" in tg:
+        updates["group_history_size"] = int(tg["group_history_size"])
 
     if updates:
         _set_parser_defaults(parser, updates)
@@ -251,10 +276,6 @@ def _set_parser_defaults(parser: argparse.ArgumentParser, updates: dict[str, obj
                 _set_parser_defaults(subparser, updates)
 
 
-def _parse_csv(value: str) -> list[str]:
-    return [item.strip() for item in value.split(",") if item.strip()]
-
-
 def _normalize_username(username: str) -> str:
     return username.lstrip("@").strip().lower()
 
@@ -265,16 +286,11 @@ def _resolve_allowed_users(
     opts: argparse.Namespace,
     config_data: dict[str, Any] | None = None,
 ) -> tuple[list[int], list[str]]:
-    try:
-        env_allowed_ids = [int(item) for item in _parse_csv(os.getenv(ALLOWED_USER_IDS_ENV, ""))]
-    except ValueError:
-        parser.error(f"{ALLOWED_USER_IDS_ENV} must be a comma-separated list of integers")
-    env_allowed_usernames = [_normalize_username(item) for item in _parse_csv(os.getenv(ALLOWED_USERNAMES_ENV, ""))]
     cli_allowed_usernames = [_normalize_username(item) for item in opts.allowed_username]
-    allowed_user_ids = [*env_allowed_ids, *opts.allowed_user_id]
-    allowed_usernames = [*env_allowed_usernames, *cli_allowed_usernames]
+    allowed_user_ids = list(opts.allowed_user_id)
+    allowed_usernames = cli_allowed_usernames
 
-    # Config file: used as a fallback when neither env vars nor CLI provided any allowed users
+    # Config file: used as a fallback when the CLI provided no allowed users
     if not allowed_user_ids and not allowed_usernames and config_data:
         tg = config_data.get("telegram", {})
         allowed_user_ids = list(tg.get("allowed_user_ids", []))
@@ -282,7 +298,7 @@ def _resolve_allowed_users(
 
     if not allowed_user_ids and not allowed_usernames:
         parser.error(
-            "--allowed-user-id/--allowed-username (or TELEGRAM_ALLOWED_USER_IDS/TELEGRAM_ALLOWED_USERNAMES) "
+            "--allowed-user-id/--allowed-username (or telegram.allowed_user_ids/telegram.allowed_usernames) "
             "must include at least one allowed user",
         )
     return allowed_user_ids, allowed_usernames
@@ -297,10 +313,6 @@ def _resolve_schedule_languages(
     if cli_languages:
         return [language.lower() for language in cli_languages]
 
-    env_languages = _parse_csv(os.getenv(SCHEDULE_LANGUAGES_ENV, ""))
-    if env_languages:
-        return [language.lower() for language in env_languages]
-
     if config_data:
         telegram_cfg = config_data.get("telegram", {})
         configured = telegram_cfg.get("schedule_languages", [])
@@ -310,56 +322,69 @@ def _resolve_schedule_languages(
     return ["en", "es"]
 
 
-def _run_bot_loop(
-    config: BotConfig,
-    bridge: TelegramBridge,
-    scheduler: ScheduledTaskScheduler | None,
-    restart_command_parts: list[str] | None,
-) -> int:
-    """Poll until normal exit; re-exec the process on restart requests."""
-    while True:
-        exit_code = run_polling(config, bridge, scheduler=scheduler)
-        if exit_code != RESTART_EXIT_CODE:
-            return exit_code
-        try:
-            if restart_command_parts is not None:
-                logging.info(
-                    "Restart requested via Telegram command. Re-execing restart command: %s",
-                    restart_command_parts,
-                )
-                os.execvp(restart_command_parts[0], restart_command_parts)
-            # TODO: Drop manual re-exec when uv can natively watch local package code and
-            # restart commands for this workflow. Tracking: astral-sh/uv#9652.
-            argv = [sys.executable, *sys.argv]
-            logging.info("Restart requested via Telegram command. Re-execing: %s", argv)
-            os.execv(sys.executable, argv)
-        except OSError:
-            logging.exception("Failed to re-exec process after /restart")
-            return 1
+def _base_spec(
+    *,
+    parser: argparse.ArgumentParser,
+    opts: argparse.Namespace,
+    config_data: dict[str, Any],
+) -> BotInstanceSpec:
+    """Resolve the flat config into the spec every named agent inherits from.
+
+    With no `agents` declared, this is also the only spec, which is why the
+    single-bot deployment keeps exactly the values it had before multi-agent support.
+    """
+    if not opts.telegram_token:
+        parser.error("--telegram-token (or telegram.bot_token in the config file) is required")
+    if not opts.agent_command:
+        parser.error("--agent-command (or acp.agent_command in the config file) is required")
+    if opts.acp_stdio_limit <= 0:
+        parser.error("--acp-stdio-limit must be a positive integer")
+    if opts.acp_connect_timeout <= 0:
+        parser.error("--acp-connect-timeout must be a positive number")
+    allowed_user_ids, allowed_usernames = _resolve_allowed_users(parser=parser, opts=opts, config_data=config_data)
+    schedule_languages = _resolve_schedule_languages(opts=opts, config_data=config_data)
+    command_parts = shlex.split(opts.agent_command)
+    if not command_parts:
+        parser.error("--agent-command is empty after parsing")
+
+    acp_cfg = config_data.get("acp", {})
+    channel_state_file = resolve_state_file(
+        name=DEFAULT_AGENT_NAME,
+        pid=os.getpid(),
+        override=acp_cfg.get("channel_state_file"),
+    )
+    return BotInstanceSpec(
+        name=DEFAULT_AGENT_NAME,
+        token=opts.telegram_token,
+        mtproto_api_id=opts.telegram_api_id,
+        mtproto_api_hash=opts.telegram_api_hash,
+        allowed_user_ids=tuple(allowed_user_ids),
+        allowed_usernames=tuple(allowed_usernames),
+        workspace=opts.workspace,
+        activity_mode=cast("ActivityMode", opts.activity_mode),
+        schedule_languages=tuple(schedule_languages),
+        group_require_mention=opts.group_require_mention
+        or bool(config_data.get("telegram", {}).get("group_require_mention", False)),
+        group_media_queue=opts.group_media_queue
+        or bool(config_data.get("telegram", {}).get("group_media_queue", False)),
+        group_history_size=int(opts.group_history_size),
+        status_reactions=cast("StatusReactionLevel", opts.status_reactions),
+        command_parts=tuple(command_parts),
+        permission_mode=cast("PermissionMode", opts.permission_mode),
+        permission_event_output=cast("PermissionEventOutput", opts.permission_event_output),
+        stdio_limit=int(opts.acp_stdio_limit),
+        connect_timeout=float(opts.acp_connect_timeout),
+        extra_mcp_servers=config_data.get("mcp_servers") or {},
+        channel_state_file=channel_state_file,
+        scheduled_tasks_db=Path(opts.scheduled_tasks_db).expanduser(),
+        allow_path_inputs=bool(acp_cfg.get("allow_path_inputs", False)),
+        restart_command_parts=tuple(shlex.split(opts.restart_command)) if opts.restart_command.strip() else None,
+    )
 
 
 def _find_config_file() -> Path | None:
-    """Find a config file from standard locations.
-
-    Returns the first readable config file from:
-    1. ./.telegram_acp_bot/config.json
-    2. $XDG_CONFIG_HOME/telegram_acp_bot/config.json
-       (or ~/.config/telegram_acp_bot/config.json when XDG_CONFIG_HOME is unset)
-    3. ~/.telegram_acp_bot/config.json
-
-    Returns None if no config file is found.
-    """
-    xdg_config_home = Path(os.environ.get("XDG_CONFIG_HOME") or "~/.config").expanduser()
-    candidates = [
-        Path(".telegram_acp_bot/config.json"),
-        xdg_config_home / "telegram_acp_bot" / "config.json",
-        Path("~/.telegram_acp_bot/config.json").expanduser(),
-    ]
-
-    for path in candidates:
-        if path.is_file():
-            return path
-    return None
+    """Find a config file from standard locations (see `telegram_acp_bot.config_file`)."""
+    return discover_config_path()
 
 
 def _load_preparsed_config(
@@ -389,11 +414,10 @@ def main(args: list[str] | None = None) -> int:
     """Run the main program.
 
     Dispatches to the appropriate sub-command when one is given (e.g.
-    `register-commands`), otherwise runs the Telegram bot polling loop.
-    Sub-commands are registered via argparse subparsers and advertised in
-    `--help`.
+    `register-commands`), otherwise runs every declared agent as its own Telegram
+    bot inside this one process. Sub-commands are registered via argparse
+    subparsers and advertised in `--help`.
     """
-    load_dotenv(override=False)
     parser = get_parser()
     argv = list(args) if args is not None else sys.argv[1:]
 
@@ -407,65 +431,30 @@ def main(args: list[str] | None = None) -> int:
 
     # Sub-command dispatch: each sub-command sets opts.func via set_defaults.
     if hasattr(opts, "func"):
-        return opts.func(opts)
+        agents = agent_tokens(config_data=config_data, fallback_token=opts.telegram_token)
+        return opts.func(opts, tokens=agents)
 
-    log_level = os.getenv("ACP_LOG_LEVEL") or config_data.get("acp", {}).get("log_level", "INFO")
+    log_level = config_data.get("acp", {}).get("log_level", "INFO")
     configure_logging(
         level=getattr(logging, str(log_level).upper(), logging.INFO),
         log_format=opts.log_format,
         close_replaced_handlers=True,
     )
 
-    if not opts.telegram_token:
-        parser.error("--telegram-token (or TELEGRAM_BOT_TOKEN) is required")
-    if not opts.agent_command:
-        parser.error("--agent-command (or ACP_AGENT_COMMAND) is required")
-    if opts.acp_stdio_limit <= 0:
-        parser.error("--acp-stdio-limit must be a positive integer")
-    if opts.acp_connect_timeout <= 0:
-        parser.error("--acp-connect-timeout must be a positive number")
-    allowed_user_ids, allowed_usernames = _resolve_allowed_users(parser=parser, opts=opts, config_data=config_data)
-    schedule_languages = _resolve_schedule_languages(opts=opts, config_data=config_data)
+    base = _base_spec(parser=parser, opts=opts, config_data=config_data)
+    try:
+        specs = resolve_specs(
+            base=base,
+            config_data=config_data,
+            agent_flags=opts.agent,
+            only=opts.only or list(config_data.get("only") or []),
+            pid=os.getpid(),
+        )
+    except ConfigFileError as exc:
+        parser.error(str(exc))
 
-    command_parts = shlex.split(opts.agent_command)
-    if not command_parts:
-        parser.error("--agent-command is empty after parsing")
-    restart_command_parts = shlex.split(opts.restart_command) if opts.restart_command.strip() else None
-    channel_state_file = default_state_file(pid=os.getpid())
-    scheduled_tasks_db = Path(opts.scheduled_tasks_db).expanduser()
-    mcp_servers = _default_mcp_servers(
-        telegram_token=opts.telegram_token,
-        state_file=channel_state_file,
-        scheduled_tasks_db=scheduled_tasks_db,
-        extra_servers=config_data.get("mcp_servers"),
-    )
-
-    config = make_config(
-        token=opts.telegram_token,
-        allowed_user_ids=allowed_user_ids,
-        allowed_usernames=allowed_usernames,
-        workspace=opts.workspace,
-        activity_mode=cast(ActivityMode, opts.activity_mode),
-        schedule_languages=schedule_languages,
-    )
-    service = AcpAgentService(
-        SessionRegistry(),
-        program=command_parts[0],
-        args=command_parts[1:],
-        default_permission_mode=cast(PermissionMode, opts.permission_mode),
-        permission_event_output=cast(PermissionEventOutput, opts.permission_event_output),
-        mcp_servers=mcp_servers,
-        channel_state_file=channel_state_file,
-        stdio_limit=opts.acp_stdio_limit,
-        connect_timeout=opts.acp_connect_timeout,
-    )
-    scheduled_task_store = ScheduledTaskStore(scheduled_tasks_db)
-    bridge = TelegramBridge(config=config, agent_service=service, scheduled_task_store=scheduled_task_store)
-    scheduler = ScheduledTaskScheduler(
-        store=scheduled_task_store,
-        runner=ScheduledTaskRunner(bridge.execute_scheduled_task),
-    )
-    return _run_bot_loop(config, bridge, scheduler, restart_command_parts)
+    stop_event = asyncio.Event()
+    return run_bot([build_bot_instance(spec, stop_event=stop_event) for spec in specs], stop_event)
 
 
 __all__: list[str] = ["get_parser", "main"]

@@ -4,26 +4,34 @@ from __future__ import annotations
 
 import os
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 from uuid import uuid4
 
+from telegram_acp_bot.agent_identity import agent_state_dir
 from telegram_acp_bot.scheduled_tasks.models import ScheduledTask, ScheduledTaskMode, ScheduledTaskStatus
 
 SQLITE_FILE_MODE = 0o600
 TIMESTAMP_TIMEZONE_REQUIRED_ERROR = "timestamp must include an explicit timezone offset"
 TIMESTAMP_AWARE_REQUIRED_ERROR = "timestamp must be timezone-aware"
+SCHEDULED_TASKS_DB_FILE_NAME = "scheduled-tasks.sqlite3"
 
 
-def default_scheduled_tasks_db_path() -> Path:
-    """Return the default persistent database path for scheduled tasks."""
+def default_scheduled_tasks_db_path(*, name: str | None = None) -> Path:
+    """Return the default persistent database path for scheduled tasks.
 
+    A named agent gets a database of its own, because schedulers in one process would
+    otherwise claim the same due row twice.
+    """
+
+    if name is not None:
+        return agent_state_dir(name) / SCHEDULED_TASKS_DB_FILE_NAME
     xdg_state_home = os.getenv("XDG_STATE_HOME", "").strip()
     state_root = Path(xdg_state_home).expanduser() if xdg_state_home else Path.home() / ".local" / "state"
-    return state_root / "telegram-acp-bot" / "scheduled-tasks.sqlite3"
+    return state_root / "telegram-acp-bot" / SCHEDULED_TASKS_DB_FILE_NAME
 
 
 def utc_now() -> datetime:
@@ -394,7 +402,7 @@ class ScheduledTaskStore:
         return cursor.rowcount
 
     @contextmanager
-    def _connect(self) -> Iterator[sqlite3.Connection]:
+    def _connect(self) -> Generator[sqlite3.Connection]:
         connection = sqlite3.connect(self._path)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA journal_mode = WAL")

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
@@ -13,6 +13,7 @@ from telegram import Update
 from telegram_acp_bot.acp.models import (
     AgentActivityBlock,
     AgentReply,
+    ElicitationRequest,
     PermissionDecisionAction,
     PermissionMode,
     PermissionPolicy,
@@ -111,6 +112,30 @@ class AgentService(Protocol):
 
     async def clear(self, *, chat_id: int) -> bool: ...
 
+    async def record_pending_media(
+        self,
+        *,
+        chat_id: int,
+        message_id: int,
+        file_id: str,
+        mime_type: str | None,
+    ) -> None: ...
+
+    async def take_pending_media(self, *, chat_id: int) -> tuple[dict[str, object], ...]: ...
+
+    async def record_group_message(  # noqa: PLR0913
+        self,
+        *,
+        chat_id: int,
+        message_id: int,
+        sender_id: int | None,
+        sender_name: str | None,
+        text: str,
+        max_entries: int,
+    ) -> None: ...
+
+    async def read_group_history(self, *, chat_id: int) -> tuple[dict[str, object], ...]: ...
+
     def get_permission_policy(self, *, chat_id: int) -> PermissionPolicy | None: ...
 
     async def set_session_permission_mode(self, *, chat_id: int, mode: PermissionMode) -> bool: ...
@@ -126,6 +151,24 @@ class AgentService(Protocol):
         self,
         handler: Callable[[int, AgentActivityBlock], Awaitable[None]] | None,
     ) -> None: ...
+
+    def set_elicitation_request_handler(
+        self,
+        handler: Callable[[ElicitationRequest], Awaitable[None]] | None,
+    ) -> None: ...
+
+    def set_elicitation_expiry_handler(
+        self,
+        handler: Callable[[int, str], Awaitable[None]] | None,
+    ) -> None: ...
+
+    async def respond_elicitation_request(
+        self,
+        *,
+        chat_id: int,
+        request_id: str,
+        answers: Mapping[str, tuple[str, ...]] | None,
+    ) -> bool: ...
 
     async def respond_permission_request(
         self,

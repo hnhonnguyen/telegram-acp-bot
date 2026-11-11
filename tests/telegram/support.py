@@ -9,18 +9,21 @@ from typing import cast
 
 import pytest
 from telegram import Bot, CallbackQuery, InlineKeyboardMarkup, MessageEntity, Update
-from telegram.error import TelegramError
+from telegram.error import BadRequest, TelegramError
 from telegram.ext import AIORateLimiter, Application
 
 from telegram_acp_bot.acp.echo_service import EchoAgentService
 from telegram_acp_bot.acp.models import (
     ActivityMode,
     AgentActivityBlock,
+    AgentCommand,
+    AgentConnectionLostError,
     AgentOutputLimitExceededError,
     AgentReply,
     FilePayload,
     ImagePayload,
     PermissionRequest,
+    PromptImage,
     ResumableSession,
 )
 from telegram_acp_bot.core.session_registry import SessionRegistry
@@ -42,7 +45,8 @@ from telegram_acp_bot.telegram.bot import (
     _PromptInput,
     build_application,
     make_config,
-    run_polling,
+    start_application,
+    stop_application,
 )
 
 pytestmark = pytest.mark.asyncio
@@ -51,6 +55,7 @@ EXPECTED_OUTBOUND_DOCUMENTS = 2
 TEST_CHAT_ID = 100
 EXPECTED_ACTIVITY_MESSAGES = 3
 ACP_STDIO_LIMIT_ERROR = "Separator is found, but chunk is longer than limit"
+AGENT_CONNECTION_LOST_ERROR = "agent could not be restarted for chat_id=100"
 EXPECTED_TEXT_REPLIES_WITH_IMPLICIT_AND_EXPLICIT_SESSION = 3
 EXPECTED_BUSY_NOTIFY_MESSAGES_AFTER_REPLACE = 2
 EXPECTED_REPEATED_ACTIVITY_MESSAGES = 2
@@ -63,6 +68,13 @@ class MarkdownFailureError(TelegramError):
 
     def __init__(self) -> None:
         super().__init__("bad markdown")
+
+
+class StatusGoneError(BadRequest):
+    """Raised by test doubles when the message to edit no longer exists."""
+
+    def __init__(self) -> None:
+        super().__init__("message not found")
 
 
 class DummyLoadFailedError(RuntimeError):
@@ -81,7 +93,7 @@ class DummyCancelBoomError(RuntimeError):
 
 
 class DummyMessage:
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         text: str | None = None,
         *,
@@ -89,12 +101,18 @@ class DummyMessage:
         caption: str | None = None,
         photo: Sequence[object] | None = None,
         document: object | None = None,
+        entities: Sequence[MessageEntity] | None = None,
+        caption_entities: Sequence[MessageEntity] | None = None,
+        reply_to_message: object | None = None,
     ) -> None:
         self.message_id = message_id
         self.text = text
         self.caption = caption
         self.photo = list(photo) if photo is not None else []
         self.document = document
+        self.entities = list(entities) if entities is not None else []
+        self.caption_entities = list(caption_entities) if caption_entities is not None else []
+        self.reply_to_message = reply_to_message
         self._next_reply_message_id = message_id + 1
         self.replies: list[str] = []
         self.reply_kwargs: list[dict[str, object]] = []
@@ -133,6 +151,7 @@ class DummyDownloadedFile:
 
 class DummyBot:
     def __init__(self) -> None:
+        self.username = "echo_bot"
         self.actions: list[tuple[int, str]] = []
         self.files: dict[str, bytes] = {}
         self.sent_messages: list[dict[str, object]] = []
@@ -243,7 +262,9 @@ class NotModifiedAwareBot(DummyBot):
 class DummyCallbackQuery:
     def __init__(self, data: str) -> None:
         self.data = data
-        self.message = SimpleNamespace(text="Permission required\nRun ls", chat=SimpleNamespace(id=TEST_CHAT_ID))
+        self.message: SimpleNamespace | None = SimpleNamespace(
+            text="Permission required\nRun ls", chat=SimpleNamespace(id=TEST_CHAT_ID)
+        )
         self.answers: list[str] = []
         self.reply_markup_cleared = False
         self.edited_text: str | None = None
@@ -439,6 +460,31 @@ class ResumeService:
 class ImplicitSessionServiceBase:
     def __init__(self) -> None:
         self._workspace_by_chat: dict[int, Path] = {}
+        self.group_messages: list[dict[str, object]] = []
+
+    async def record_group_message(  # noqa: PLR0913
+        self,
+        *,
+        chat_id: int,
+        message_id: int,
+        sender_id: int | None,
+        sender_name: str | None,
+        text: str,
+        max_entries: int,
+    ) -> None:
+        del max_entries
+        self.group_messages.append(
+            {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "sender_id": sender_id,
+                "sender_name": sender_name,
+                "text": text,
+            }
+        )
+
+    async def read_group_history(self, *, chat_id: int) -> tuple[dict[str, object], ...]:
+        return tuple(message for message in self.group_messages if message["chat_id"] == chat_id)
 
     def get_workspace(self, *, chat_id: int):
         return self._workspace_by_chat.get(chat_id)
@@ -480,6 +526,39 @@ class RecordingImplicitService(ImplicitSessionServiceBase):
     async def prompt(self, *, chat_id: int, text: str, images=(), files=()):
         del chat_id, text, images, files
         return AgentReply(text="ok")
+
+
+class AgentCommandsService(ImplicitSessionServiceBase):
+    """Service double that advertises agent slash commands and records forwarded prompts."""
+
+    def __init__(self, commands: tuple[AgentCommand, ...] | None = ()) -> None:
+        super().__init__()
+        self.commands = commands
+        self.prompts: list[tuple[str, tuple[PromptImage, ...]]] = []
+        self.new_session_calls: list[tuple[int, Path]] = []
+        self.pending_media: list[tuple[int, int, str, str]] = []
+
+    async def new_session(self, *, chat_id: int, workspace: Path) -> str:
+        self.new_session_calls.append((chat_id, workspace))
+        self._workspace_by_chat[chat_id] = workspace
+        return "s-cmds"
+
+    def get_available_commands(self, *, chat_id: int) -> tuple[AgentCommand, ...] | None:
+        del chat_id
+        return self.commands
+
+    async def prompt(self, *, chat_id: int, text: str, images=(), files=()):
+        del chat_id, files
+        self.prompts.append((text, images))
+        return AgentReply(text="ok")
+
+    async def record_pending_media(self, *, chat_id: int, message_id: int, file_id: str, mime_type: str) -> None:
+        self.pending_media.append((chat_id, message_id, file_id, mime_type))
+
+    async def take_pending_media(self, *, chat_id: int) -> tuple[dict[str, object], ...]:
+        taken = [ref for ref in self.pending_media if ref[0] == chat_id]
+        self.pending_media = [ref for ref in self.pending_media if ref[0] != chat_id]
+        return tuple({"file_id": file_id, "mime_type": mime_type} for _, _, file_id, mime_type in taken)
 
 
 class FailingImplicitService(ImplicitSessionServiceBase):
@@ -525,6 +604,7 @@ def make_update(  # noqa: PLR0913
     *,
     user_id: int = 1,
     username: str | None = None,
+    is_bot: bool = False,
     chat_id: int = 100,
     text: str | None = None,
     caption: str | None = None,
@@ -532,15 +612,28 @@ def make_update(  # noqa: PLR0913
     document: object | None = None,
     message_id: int = 1,
     with_message: bool = True,
+    chat_type: str = "private",
+    entities: Sequence[MessageEntity] | None = None,
+    caption_entities: Sequence[MessageEntity] | None = None,
+    reply_to_message: object | None = None,
 ):
     message = (
-        DummyMessage(text, message_id=message_id, caption=caption, photo=photo, document=document)
+        DummyMessage(
+            text,
+            message_id=message_id,
+            caption=caption,
+            photo=photo,
+            document=document,
+            entities=entities,
+            caption_entities=caption_entities,
+            reply_to_message=reply_to_message,
+        )
         if with_message
         else None
     )
     return SimpleNamespace(
-        effective_user=SimpleNamespace(id=user_id, username=username),
-        effective_chat=SimpleNamespace(id=chat_id),
+        effective_user=SimpleNamespace(id=user_id, username=username, is_bot=is_bot),
+        effective_chat=SimpleNamespace(id=chat_id, type=chat_type),
         message=message,
     )
 
@@ -549,8 +642,19 @@ def make_context(*, args: list[str] | None = None, application: object | None = 
     return SimpleNamespace(args=args or [], bot=DummyBot(), application=application)
 
 
-def make_bridge(*, allowed_ids: set[int] | None = None) -> TelegramBridge:
-    config = make_config(token="TOKEN", allowed_user_ids=list(allowed_ids or set()), workspace=".")
+def make_bridge(
+    *,
+    allowed_ids: set[int] | None = None,
+    group_require_mention: bool = False,
+    group_media_queue: bool = False,
+) -> TelegramBridge:
+    config = make_config(
+        token="TOKEN",
+        allowed_user_ids=list(allowed_ids or set()),
+        workspace=".",
+        group_require_mention=group_require_mention,
+        group_media_queue=group_media_queue,
+    )
     return TelegramBridge(config=config, agent_service=EchoAgentService(SessionRegistry()))
 
 
@@ -566,6 +670,7 @@ def make_verbose_bridge() -> TelegramBridge:
 
 __all__ = [
     "ACP_STDIO_LIMIT_ERROR",
+    "AGENT_CONNECTION_LOST_ERROR",
     "BUSY_CALLBACK_PREFIX",
     "BUSY_SENT_TEXT",
     "BUSY_STILL_QUEUED_TEXT",
@@ -583,6 +688,9 @@ __all__ = [
     "AIORateLimiter",
     "ActivityMode",
     "AgentActivityBlock",
+    "AgentCommand",
+    "AgentCommandsService",
+    "AgentConnectionLostError",
     "AgentOutputLimitExceededError",
     "AgentReply",
     "AgentService",
@@ -624,6 +732,7 @@ __all__ = [
     "Sequence",
     "SessionRegistry",
     "SimpleNamespace",
+    "StatusGoneError",
     "TelegramBridge",
     "TelegramError",
     "Update",
@@ -646,5 +755,6 @@ __all__ = [
     "make_verbose_bridge",
     "pytest",
     "pytestmark",
-    "run_polling",
+    "start_application",
+    "stop_application",
 ]

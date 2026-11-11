@@ -32,8 +32,24 @@ async def test_start_and_help():
     assert "Send a message to start in the default workspace" in update.message.replies[0]
     assert "Commands:" in update.message.replies[1]
     assert "/cancel" in update.message.replies[1]
+    assert "/cmds" in update.message.replies[1]
     assert "/mode" in update.message.replies[1]
     assert "/scheduled" in update.message.replies[1]
+
+
+async def test_help_names_the_agent_behind_the_bot():
+    bridge = TelegramBridge(
+        config=make_config(token="TOKEN", allowed_user_ids=[], workspace="."),
+        agent_service=EchoAgentService(SessionRegistry()),
+        agent_name="qoder",
+    )
+    update = make_update(with_message=True)
+
+    await bridge.help(update, make_context())
+
+    assert update.message is not None
+    assert update.message.replies[0].startswith("You are talking to the qoder agent.")
+    assert "Commands:" in update.message.replies[0]
 
 
 async def test_mode_command_sets_verbose_activity_mode():
@@ -206,13 +222,14 @@ async def test_compact_permission_request_returns_early_without_app():
 
 async def test_restart_requests_app_stop():
     service = EchoAgentService(SessionRegistry())
+    stop_calls: list[str] = []
     bridge = TelegramBridge(
         config=make_config(token="TOKEN", allowed_user_ids=[], workspace="."),
         agent_service=service,
+        stop_request=lambda: stop_calls.append("stop"),
     )
     update = make_update(with_message=True)
-    stop_calls: list[str] = []
-    bridge._app = cast(Application, SimpleNamespace(stop_running=lambda: stop_calls.append("stop")))
+    bridge._app = cast(Application, SimpleNamespace())
     session_id = await service.new_session(chat_id=TEST_CHAT_ID, workspace=Path("/tmp/restart-workspace"))
 
     await bridge.restart(update, make_context())
@@ -222,6 +239,7 @@ async def test_restart_requests_app_stop():
         f"Restart requested. Re-launching process...\nSession restarted: {session_id} in /tmp/restart-workspace"
     ]
     assert stop_calls == ["stop"]
+    assert bridge.restart_requested is True
 
 
 async def test_restart_with_index_resumes_selected_candidate():
@@ -301,14 +319,28 @@ async def test_restart_with_zero_index_resumes_first_candidate():
 async def test_restart_with_running_app_and_no_active_session_reports_missing_session():
     bridge = make_bridge()
     update = make_update(with_message=True)
-    stop_calls: list[str] = []
-    bridge._app = cast(Application, SimpleNamespace(stop_running=lambda: stop_calls.append("stop")))
+    bridge._app = cast(Application, SimpleNamespace())
 
     await bridge.restart(update, make_context())
 
     assert update.message is not None
     assert update.message.replies == ["No active session. Use /new first."]
-    assert stop_calls == []
+    assert bridge.restart_requested is False
+
+
+async def test_restart_without_a_stop_callback_still_records_the_request():
+    service = EchoAgentService(SessionRegistry())
+    bridge = TelegramBridge(
+        config=make_config(token="TOKEN", allowed_user_ids=[], workspace="."),
+        agent_service=service,
+    )
+    bridge._app = cast(Application, SimpleNamespace())
+    await service.new_session(chat_id=TEST_CHAT_ID, workspace=Path("/tmp/restart-workspace"))
+    update = make_update(with_message=True)
+
+    await bridge.restart(update, make_context())
+
+    assert bridge.restart_requested is True
 
 
 async def test_restart_with_two_indexes_reports_usage():
@@ -458,25 +490,18 @@ async def test_denied_paths_for_other_handlers():
     context = make_context()
 
     await bridge.help(update, context)
+    await bridge.cmds(update, context)
     await bridge.new_session(update, make_context(args=["/tmp"]))
     await bridge.resume_session(update, make_context(args=["/tmp"]))
     await bridge.session(update, context)
     await bridge.cancel(update, context)
     await bridge.stop(update, context)
     await bridge.clear(update, context)
+    await bridge.on_agent_command(update, context)
     await bridge.on_message(update, context)
 
     assert update.message is not None
-    assert update.message.replies == [
-        "Access denied for this bot.",
-        "Access denied for this bot.",
-        "Access denied for this bot.",
-        "Access denied for this bot.",
-        "Access denied for this bot.",
-        "Access denied for this bot.",
-        "Access denied for this bot.",
-        "Access denied for this bot.",
-    ]
+    assert update.message.replies == ["Access denied for this bot."] * 10
 
 
 async def test_new_session_and_session_command():

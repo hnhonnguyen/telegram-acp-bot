@@ -11,8 +11,13 @@ from acp import RequestError
 from acp.schema import (
     AgentMessageChunk,
     AudioContentBlock,
+    AvailableCommand,
+    AvailableCommandsUpdate,
     BlobResourceContents,
+    CancelElicitationResponse,
+    CreateElicitationResponse,
     CreateTerminalResponse,
+    ElicitationMode,
     EmbeddedResourceContentBlock,
     EnvVariable,
     ImageContentBlock,
@@ -34,6 +39,7 @@ from acp.schema import (
 
 from telegram_acp_bot.acp.models import (
     AgentActivityBlock,
+    AgentCommand,
     AgentReply,
     FilePayload,
     ImagePayload,
@@ -52,6 +58,29 @@ from telegram_acp_bot.acp.session import (
     _PendingTextState,
 )
 
+_HOOK_TOOL_TITLE_PREFIX = "Ran hook"
+
+
+def _is_hook_tool_call(*, kind: str, title: str) -> bool:
+    """Whether a tool call reports an agent hook run rather than real work.
+
+    Agents surface lifecycle hooks as ordinary tool calls — Devin titles them
+    `Ran hook: <script> (<event>)`, others may tag `kind="hook"`. Their raw
+    output is plumbing, not user-facing progress, so it is hidden from chat.
+    """
+    return kind == "hook" or title.startswith(_HOOK_TOOL_TITLE_PREFIX)
+
+
+def _is_hook_block(block: AgentActivityBlock) -> bool:
+    """Whether the activity block reports an agent hook run. See `{py:func}`_is_hook_tool_call`."""
+    return _is_hook_tool_call(kind=block.kind, title=block.title)
+
+
+def _agent_command(command: AvailableCommand) -> AgentCommand:
+    """Project one ACP advertised command onto the transport-facing model."""
+    hint = command.input.root.hint if command.input is not None else ""
+    return AgentCommand(name=command.name, description=command.description, hint=hint)
+
 
 class _AcpClient:
     """ACP client callbacks that accumulate agent text chunks per session."""
@@ -60,12 +89,16 @@ class _AcpClient:
         self,
         *,
         permission_decider: Callable[[str, list[PermissionOption], ToolCall], Awaitable[RequestPermissionResponse]],
+        elicitation_decider: Callable[[str, ElicitationMode], Awaitable[CreateElicitationResponse]] | None = None,
         event_reporter: Callable[[str, str], None] | None = None,
         activity_reporter: Callable[[str, AgentActivityBlock], Awaitable[None]] | None = None,
+        commands_reporter: Callable[[str, tuple[AgentCommand, ...]], Awaitable[None]] | None = None,
     ) -> None:
         self._permission_decider = permission_decider
+        self._elicitation_decider = elicitation_decider
         self._event_reporter = event_reporter
         self._activity_reporter = activity_reporter
+        self._commands_reporter = commands_reporter
         self._buffers: dict[str, list[str]] = {}
         self._pending_non_tool_text: dict[str, list[str]] = {}
         self._pending_non_tool_state: dict[str, _PendingTextState] = {}
@@ -105,6 +138,14 @@ class _AcpClient:
         )
         return await self._permission_decider(session_id, options, tool_call)
 
+    async def create_elicitation(
+        self, message: str, mode: ElicitationMode, **kwargs: object
+    ) -> CreateElicitationResponse:
+        del kwargs
+        if self._elicitation_decider is None:
+            return CancelElicitationResponse(action="cancel")
+        return await self._elicitation_decider(message, mode)
+
     async def session_update(
         self,
         session_id: str,
@@ -143,6 +184,11 @@ class _AcpClient:
                 if active_block.tool_call_id != update.tool_call_id:
                     return
                 await self._close_active_tool_block(session_id=session_id, status=status)
+            return
+        if isinstance(update, AvailableCommandsUpdate):
+            commands = tuple(_agent_command(command) for command in update.available_commands)
+            self._report_event(session_id, f"available commands {len(commands)}")
+            await self._emit_commands(session_id=session_id, commands=commands)
             return
         if not isinstance(update, AgentMessageChunk):
             return
@@ -313,6 +359,10 @@ class _AcpClient:
         if active_block is None:
             return
 
+        if _is_hook_tool_call(kind=active_block.kind, title=active_block.title):
+            self._active_tool_blocks[session_id] = None
+            return
+
         normalized_status = status if status in TERMINAL_TOOL_STATUSES else "in_progress"
         block_text = "".join(active_block.chunks).strip()
         if is_prompt_end and active_block.kind != "think" and block_text:
@@ -325,8 +375,8 @@ class _AcpClient:
             text=block_text,
             activity_id=active_block.tool_call_id,
         )
-        self._completed_tool_blocks.setdefault(session_id, []).append(block)
         self._active_tool_blocks[session_id] = None
+        self._completed_tool_blocks.setdefault(session_id, []).append(block)
         if block.kind == "think" or block.text:
             await self._emit_activity_block(session_id=session_id, block=block)
 
@@ -337,7 +387,14 @@ class _AcpClient:
     async def _emit_activity_block(self, *, session_id: str, block: AgentActivityBlock) -> None:
         if self._activity_reporter is None:
             return
+        if _is_hook_block(block):
+            return
         await self._activity_reporter(session_id, block)
+
+    async def _emit_commands(self, *, session_id: str, commands: tuple[AgentCommand, ...]) -> None:
+        if self._commands_reporter is None:
+            return
+        await self._commands_reporter(session_id, commands)
 
     async def _flush_pending_non_tool_text(self, *, session_id: str) -> None:
         pending = self._pending_non_tool_text.get(session_id)
@@ -371,7 +428,7 @@ class _AcpClient:
         del path, session_id, limit, line, kwargs
         raise RequestError.method_not_found("fs/read_text_file")
 
-    async def create_terminal(  # noqa: PLR0913
+    async def create_terminal(  # noqa: PLR0913,PLR0917
         self,
         command: str,
         session_id: str,
@@ -410,4 +467,3 @@ class _AcpClient:
 
     async def ext_notification(self, method: str, params: dict[str, object]) -> None:
         del method, params
-        raise RequestError.method_not_found("ext/notification")

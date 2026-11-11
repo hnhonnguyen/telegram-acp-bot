@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from datetime import UTC, datetime
@@ -11,7 +11,7 @@ from typing import Any, Protocol, cast
 from rich.logging import RichHandler
 from rich.markup import escape
 
-_CONTEXT_FIELDS = ("chat_id", "session_id", "prompt_cycle_id")
+_CONTEXT_FIELDS = ("agent", "chat_id", "session_id", "prompt_cycle_id")
 _MISSING = "-"
 LOG_TEXT_PREVIEW_MAX_CHARS = 160
 _log_context: ContextVar[dict[str, str] | None] = ContextVar("telegram_acp_log_context", default=None)
@@ -56,11 +56,11 @@ def configure_logging(
                 existing_handler.close()
     root_logger.setLevel(level)
     root_logger.addHandler(handler)
-    _configure_third_party_logging()
+    quiet_transport_logging()
 
 
 @contextmanager
-def bind_log_context(**fields: object) -> Iterator[None]:
+def bind_log_context(**fields: object) -> Generator[None]:
     """Temporarily bind contextual fields to log records in the current task."""
 
     current = _log_context.get() or {}
@@ -111,8 +111,13 @@ def _contextual_log_record_factory(*args: object, **kwargs: object) -> logging.L
     return record
 
 
-def _configure_third_party_logging() -> None:
-    """Reduce noisy transport/framework logs in default bot output."""
+def quiet_transport_logging() -> None:
+    """Reduce noisy transport/framework logs in default bot output.
+
+    `httpx` logs every request URL at INFO, and the Telegram Bot API puts the bot
+    token in that URL, so any process that only reaches for a handler leaves a
+    credential in whoever captured the console.
+    """
 
     for logger_name in ("httpx", "httpcore", "telegram.ext", "apscheduler"):
         logging.getLogger(logger_name).setLevel(logging.WARNING)
@@ -133,6 +138,10 @@ class _RichTextFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         logger_label = _logger_label(record.name)
         parts = [f"[bold bright_cyan]{logger_label}[/]"]
+
+        agent = getattr(record, "agent", _MISSING)
+        if agent != _MISSING:
+            parts.append(f"[bright_blue]agent[/]=[white]{escape(str(agent))}[/]")
 
         chat_id = getattr(record, "chat_id", _MISSING)
         if chat_id != _MISSING:
@@ -158,6 +167,7 @@ class _JsonLogFormatter(logging.Formatter):
             "level": record.levelname,
             "logger": record.name,
             "message": record.getMessage(),
+            "agent": getattr(record, "agent", _MISSING),
             "chat_id": getattr(record, "chat_id", _MISSING),
             "session_id": getattr(record, "session_id", _MISSING),
             "prompt_cycle_id": getattr(record, "prompt_cycle_id", _MISSING),

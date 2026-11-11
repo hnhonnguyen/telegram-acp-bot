@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import logging
 import os
 import shlex
@@ -8,14 +9,13 @@ import sys
 from pathlib import Path
 from typing import cast
 
-from acp.schema import EnvVariable, McpServerStdio
 from dotenv import load_dotenv
 
 from telegram_acp_bot.acp.models import PermissionEventOutput, PermissionMode
-from telegram_acp_bot.acp.service import AcpAgentService
-from telegram_acp_bot.core.session_registry import SessionRegistry
-from telegram_acp_bot.mcp.state import STATE_FILE_ENV, TOKEN_ENV, default_state_file
-from telegram_acp_bot.telegram.bot import TelegramBridge, make_config, run_polling
+from telegram_acp_bot.instance import BotInstanceSpec, build_bot_instance
+from telegram_acp_bot.mcp.state import MAX_GROUP_HISTORY_PER_CHAT, default_state_file
+from telegram_acp_bot.runner import run_bot
+from telegram_acp_bot.scheduled_tasks import default_scheduled_tasks_db_path
 
 TOKEN_REQUIRED_MESSAGE = "--telegram-token (or TELEGRAM_BOT_TOKEN) is required"
 ALLOWLIST_REQUIRED_MESSAGE = "Provide at least one allowlist entry via --allowed-user-id or --allowed-username"
@@ -24,6 +24,7 @@ DEFAULT_AGENT_COMMAND_TEMPLATE = "{python} scripts/demo/fake_acp_agent.py --scen
 STDIO_LIMIT_MESSAGE = "--acp-stdio-limit must be a positive integer"
 CONNECT_TIMEOUT_MESSAGE = "--acp-connect-timeout must be a positive number"
 EMPTY_COMMAND_MESSAGE = "--agent-command is empty after parsing"
+DEMO_AGENT_NAME = "demo"
 
 
 def _parse_csv(value: str) -> list[str]:
@@ -43,20 +44,6 @@ def _normalize_usernames(values: list[str]) -> list[str]:
 
 def _default_agent_command() -> str:
     return DEFAULT_AGENT_COMMAND_TEMPLATE.format(python=shlex.quote(sys.executable))
-
-
-def _default_mcp_servers(*, telegram_token: str, state_file: Path) -> tuple[McpServerStdio, ...]:
-    return (
-        McpServerStdio(
-            name="telegram-channel",
-            command=sys.executable,
-            args=["-m", "telegram_acp_bot.mcp.server"],
-            env=[
-                EnvVariable(name=TOKEN_ENV, value=telegram_token),
-                EnvVariable(name=STATE_FILE_ENV, value=str(state_file)),
-            ],
-        ),
-    )
 
 
 def parse_args() -> argparse.Namespace:
@@ -148,28 +135,33 @@ def main() -> int:
     if not command_parts:
         raise SystemExit(EMPTY_COMMAND_MESSAGE)
 
-    channel_state_file = default_state_file(pid=os.getpid())
-    mcp_servers = _default_mcp_servers(telegram_token=token, state_file=channel_state_file)
-
-    config = make_config(
+    spec = BotInstanceSpec(
+        name=DEMO_AGENT_NAME,
         token=token,
-        allowed_user_ids=allowed_user_ids,
-        allowed_usernames=allowed_usernames,
+        mtproto_api_id=None,
+        mtproto_api_hash="",
+        allowed_user_ids=tuple(allowed_user_ids),
+        allowed_usernames=tuple(allowed_usernames),
         workspace=args.workspace,
-    )
-    service = AcpAgentService(
-        SessionRegistry(),
-        program=command_parts[0],
-        args=command_parts[1:],
-        default_permission_mode=cast(PermissionMode, args.permission_mode),
+        activity_mode="normal",
+        schedule_languages=("en",),
+        group_require_mention=False,
+        group_media_queue=False,
+        group_history_size=MAX_GROUP_HISTORY_PER_CHAT,
+        status_reactions="off",
+        command_parts=tuple(command_parts),
+        permission_mode=cast(PermissionMode, args.permission_mode),
         permission_event_output=cast(PermissionEventOutput, args.permission_event_output),
-        mcp_servers=mcp_servers,
-        channel_state_file=channel_state_file,
         stdio_limit=args.acp_stdio_limit,
         connect_timeout=args.acp_connect_timeout,
+        extra_mcp_servers={},
+        channel_state_file=default_state_file(pid=os.getpid()),
+        scheduled_tasks_db=default_scheduled_tasks_db_path(name=DEMO_AGENT_NAME),
+        allow_path_inputs=False,
+        restart_command_parts=None,
     )
-    bridge = TelegramBridge(config=config, agent_service=service)
-    return run_polling(config, bridge)
+    stop_event = asyncio.Event()
+    return run_bot([build_bot_instance(spec, stop_event=stop_event)], stop_event)
 
 
 if __name__ == "__main__":

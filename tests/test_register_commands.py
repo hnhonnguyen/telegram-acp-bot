@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import json
+import logging
+from pathlib import Path
 
 import pytest
 from telegram import (
@@ -22,18 +25,22 @@ from telegram_acp_bot.register_commands import (
 )
 from telegram_acp_bot.telegram.bot import BOT_COMMANDS
 
+QODER_TOKEN = "1:qoder"
+CLAUDE_TOKEN = "2:claude"
+FLEET_SIZE = 2
+REFUSED_MESSAGE = "Invalid token"
+
 
 @pytest.fixture(autouse=True)
-def isolate_env(monkeypatch: pytest.MonkeyPatch, mocker):
-    """Remove real token env vars and stub load_dotenv for both dispatch paths.
+def isolate_config_discovery(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    """Keep tests from discovering a real operator config in the home directory.
 
-    `main()` calls `telegram_acp_bot.load_dotenv`; `register_commands_main()`
-    calls `telegram_acp_bot.register_commands.load_dotenv`.  Both are patched
-    so neither path loads a real `.env` file during tests.
+    Both `main()` and `register_commands_main()` look for a config file in standard
+    locations. Pointing HOME and XDG_CONFIG_HOME at an empty tmp directory makes that
+    search find nothing, so each test controls its own tokens explicitly.
     """
-    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
-    mocker.patch("telegram_acp_bot.load_dotenv")
-    return mocker.patch("telegram_acp_bot.register_commands.load_dotenv")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
 
 
 # ---------------------------------------------------------------------------
@@ -70,6 +77,19 @@ def test_get_register_commands_parser_returns_parser():
 
 def test_register_commands_main_requires_token():
     """Missing token exits with error."""
+    with pytest.raises(SystemExit):
+        register_commands_main([])
+
+
+def test_register_commands_main_reports_an_unreadable_discovered_config(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """A discovered config file that fails validation stops the run before any API call."""
+    config_dir = tmp_path / "config" / "telegram_acp_bot"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    config_dir.mkdir(parents=True)
+    (config_dir / "config.json").write_text("{not valid json")
+
     with pytest.raises(SystemExit):
         register_commands_main([])
 
@@ -138,6 +158,18 @@ def test_register_success(mocker, capsys: pytest.CaptureFixture):
     out = capsys.readouterr().out
     assert str(len(BOT_COMMANDS)) in out
     assert "Registered" in out
+
+
+def test_the_api_path_silences_transport_logs_that_carry_the_token(monkeypatch: pytest.MonkeyPatch, mocker):
+    """httpx logs the whole request URL at INFO, and that URL is the bot token."""
+    for name in ("httpx", "httpcore", "telegram.ext", "apscheduler"):
+        monkeypatch.setattr(logging.getLogger(name), "level", logging.NOTSET)
+    mocker.patch("telegram_acp_bot.register_commands._call_api", new=mocker.AsyncMock())
+
+    assert register_commands_main(["--telegram-token", "TOKEN"]) == 0
+
+    for name in ("httpx", "httpcore", "telegram.ext", "apscheduler"):
+        assert logging.getLogger(name).level == logging.WARNING
 
 
 def test_delete_success(mocker, capsys: pytest.CaptureFixture):
@@ -263,3 +295,90 @@ async def test_call_api_delete(mocker):
     mock_bot.set_my_commands.assert_not_awaited()
     call_kwargs = mock_bot.delete_my_commands.call_args
     assert isinstance(call_kwargs.kwargs["scope"], BotCommandScopeDefault)
+
+
+# ---------------------------------------------------------------------------
+# multi-agent registration
+# ---------------------------------------------------------------------------
+
+
+def agents_config(tmp_path: Path, data: dict | None = None) -> Path:
+    """Write a config file that declares two agents, each with its own token."""
+    path = tmp_path / "config.json"
+    path.write_text(
+        json.dumps(
+            data
+            or {
+                "agents": {
+                    "qoder": {"telegram": {"bot_token": QODER_TOKEN}},
+                    "claude": {"telegram": {"bot_token": CLAUDE_TOKEN}},
+                }
+            }
+        )
+    )
+    return path
+
+
+def test_main_registers_every_declared_agent(mocker, monkeypatch, tmp_path):
+    """A fleet config calls the API once per bot, each with its own token."""
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    call_api = mocker.patch("telegram_acp_bot.register_commands._call_api", new=mocker.AsyncMock())
+
+    assert main(["--config", str(agents_config(tmp_path)), "register-commands"]) == 0
+    assert [call.kwargs["token"] for call in call_api.await_args_list] == [QODER_TOKEN, CLAUDE_TOKEN]
+
+
+def test_main_dry_runs_every_declared_agent(monkeypatch, tmp_path, capsys: pytest.CaptureFixture):
+    """Dry-run names each agent, so an operator sees which bot would be touched."""
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+
+    assert main(["--config", str(agents_config(tmp_path)), "register-commands", "--dry-run"]) == 0
+    out = capsys.readouterr().out
+    assert out.count("[dry-run] Would register") == FLEET_SIZE
+    assert "[qoder]" in out and "[claude]" in out
+
+
+def test_register_commands_bot_selects_one_agent(monkeypatch, tmp_path, capsys: pytest.CaptureFixture):
+    """--bot narrows the run to the one agent named."""
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+
+    assert main(["--config", str(agents_config(tmp_path)), "register-commands", "--bot", "claude", "--dry-run"]) == 0
+    out = capsys.readouterr().out
+    assert "[claude]" in out
+    assert "[qoder]" not in out
+
+
+def test_register_commands_rejects_an_unknown_bot(monkeypatch, tmp_path, capsys: pytest.CaptureFixture):
+    """Naming an agent the config does not declare fails instead of silently doing nothing."""
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+
+    with pytest.raises(SystemExit):
+        main(["--config", str(agents_config(tmp_path)), "register-commands", "--bot", "ghost"])
+    assert "no agent named 'ghost' is declared" in capsys.readouterr().err
+
+
+def test_register_commands_reports_an_agent_without_a_token(tmp_path, capsys: pytest.CaptureFixture):
+    """A declared agent with no token names the config key to set."""
+    with pytest.raises(SystemExit):
+        main(["--config", str(agents_config(tmp_path, {"agents": {"qoder": {}}})), "register-commands"])
+    err = capsys.readouterr().err
+    assert "agent 'qoder' has no token" in err
+    assert "agents.qoder" in err
+
+
+def test_register_commands_fails_when_one_agent_is_refused(mocker, monkeypatch, tmp_path, capsys):
+    """One refused bot fails the run, after the others were still registered."""
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+
+    def refuse_claude(*, token, **kwargs):
+        del kwargs
+        if token == CLAUDE_TOKEN:
+            raise TelegramError(REFUSED_MESSAGE)
+
+    call_api = mocker.patch(
+        "telegram_acp_bot.register_commands._call_api", new=mocker.AsyncMock(side_effect=refuse_claude)
+    )
+
+    assert main(["--config", str(agents_config(tmp_path)), "register-commands"]) == 1
+    assert len(call_api.await_args_list) == FLEET_SIZE
+    assert REFUSED_MESSAGE in capsys.readouterr().err

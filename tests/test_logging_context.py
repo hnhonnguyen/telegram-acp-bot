@@ -35,7 +35,7 @@ def test_configure_logging_text_includes_context_fields(caplog: pytest.LogCaptur
         root.addHandler(caplog.handler)
         root.setLevel(logging.INFO)
         logger = logging.getLogger("telegram_acp_bot.test")
-        with bind_log_context(chat_id=42, session_id="s-1", prompt_cycle_id="c-1"):
+        with bind_log_context(agent="qoder", chat_id=42, session_id="s-1", prompt_cycle_id="c-1"):
             logger.info("hello")
     finally:
         if added_handler is not None:
@@ -51,6 +51,7 @@ def test_configure_logging_text_includes_context_fields(caplog: pytest.LogCaptur
     assert len(caplog.records) == 1
     record = cast(Any, caplog.records[0])
     assert record.message == "hello"
+    assert record.agent == "qoder"
     assert record.chat_id == "42"
     assert record.session_id == "s-1"
     assert record.prompt_cycle_id == "c-1"
@@ -70,7 +71,7 @@ def test_configure_logging_json_includes_context_fields(caplog: pytest.LogCaptur
         root.addHandler(caplog.handler)
         root.setLevel(logging.INFO)
         logger = logging.getLogger("telegram_acp_bot.test")
-        with bind_log_context(chat_id=7, session_id="session-7", prompt_cycle_id="cycle-7"):
+        with bind_log_context(agent="qoder", chat_id=7, session_id="session-7", prompt_cycle_id="cycle-7"):
             logger.info("json hello")
     finally:
         if added_handler is not None:
@@ -87,6 +88,7 @@ def test_configure_logging_json_includes_context_fields(caplog: pytest.LogCaptur
     assert formatter is not None
     payload = json.loads(formatter.format(caplog.records[0]))
     assert payload["message"] == "json hello"
+    assert payload["agent"] == "qoder"
     assert payload["chat_id"] == "7"
     assert payload["session_id"] == "session-7"
     assert payload["prompt_cycle_id"] == "cycle-7"

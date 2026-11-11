@@ -325,15 +325,23 @@ async def test_on_message_skips_empty_final_text_reply():
     assert update.message.replies == []
 
 
-async def test_on_message_reports_acp_stdio_limit_error():
-    class LimitErrorService:
+@pytest.mark.parametrize(
+    ("service_error", "expected_reply"),
+    [
+        (AgentOutputLimitExceededError(ACP_STDIO_LIMIT_ERROR), "Agent output exceeded ACP stdio limit."),
+        (AgentConnectionLostError(AGENT_CONNECTION_LOST_ERROR), "could not be restarted"),
+    ],
+    ids=["stdio-limit", "agent-lost"],
+)
+async def test_on_message_reports_agent_service_error(service_error: Exception, expected_reply: str):
+    class FailingService:
         async def new_session(self, *, chat_id: int, workspace):
             del workspace
             return f"s-{chat_id}"
 
         async def prompt(self, *, chat_id: int, text: str, images=(), files=()):
             del chat_id, text, images, files
-            raise AgentOutputLimitExceededError(ACP_STDIO_LIMIT_ERROR)
+            raise service_error
 
         def get_workspace(self, *, chat_id: int):
             del chat_id
@@ -362,14 +370,14 @@ async def test_on_message_reports_acp_stdio_limit_error():
             return False
 
     config = make_config(token="TOKEN", allowed_user_ids=[], workspace=".")
-    bridge = TelegramBridge(config=config, agent_service=cast(AgentService, LimitErrorService()))
+    bridge = TelegramBridge(config=config, agent_service=cast(AgentService, FailingService()))
     update = make_update(text="hello")
     context = make_context()
 
     await bridge.on_message(update, context)
 
     assert update.message is not None
-    assert "Agent output exceeded ACP stdio limit." in update.message.replies[-1]
+    assert expected_reply in update.message.replies[-1]
 
 
 async def test_on_message_reraises_unrelated_value_error():
@@ -1990,42 +1998,6 @@ async def test_build_application_installs_handlers():
     assert app.handlers
     assert app.update_processor.max_concurrent_updates > 1
     assert isinstance(app.bot.rate_limiter, AIORateLimiter)
-
-
-async def test_run_polling(monkeypatch):
-    calls: list[object] = []
-
-    class DummyApp:
-        def run_polling(self, *, allowed_updates):
-            calls.append(allowed_updates)
-
-    def fake_build_application(config, bridge):
-        del config, bridge
-        return DummyApp()
-
-    monkeypatch.setattr(app_module, "build_application", fake_build_application)
-
-    config = make_config(token="TOKEN", allowed_user_ids=[], workspace=".")
-    bridge = make_bridge()
-    assert run_polling(config, bridge) == 0
-    assert len(calls) == 1
-
-
-async def test_run_polling_returns_restart_exit_code(monkeypatch):
-    class DummyApp:
-        def run_polling(self, *, allowed_updates):
-            del allowed_updates
-
-    def fake_build_application(config, bridge):
-        del config
-        bridge._restart_requested = True
-        return DummyApp()
-
-    monkeypatch.setattr(app_module, "build_application", fake_build_application)
-
-    config = make_config(token="TOKEN", allowed_user_ids=[], workspace=".")
-    bridge = make_bridge()
-    assert run_polling(config, bridge) == RESTART_EXIT_CODE
 
 
 # ---------------------------------------------------------------------------

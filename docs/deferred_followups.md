@@ -106,7 +106,7 @@ User: /schedule 2h Generate the weekly summary report
 Bot: Scheduled for 2026-04-11 12:00 UTC. Use /scheduled to view or cancel.
 ```
 
-Natural-language parsing uses English and Spanish by default, and can be restricted or extended with {term}`ACP_SCHEDULE_LANGUAGES` or `telegram.schedule_languages`.
+Natural-language parsing uses English and Spanish by default, and can be restricted or extended with `telegram.schedule_languages` or the `--schedule-language` flag.
 
 The `/schedule` command sets the command message itself as the anchor, so the scheduled reply will appear directly in that thread. Session behavior and failure reporting follow the same rules as agent-driven scheduling.
 

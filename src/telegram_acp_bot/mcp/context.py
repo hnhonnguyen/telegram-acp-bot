@@ -21,6 +21,7 @@ class RequestContext:
     chat_id: int
     session_id: str
     prompt_message_id: int | None
+    state_file: Path
 
 
 def resolve_request_context(*, session_id: str | None) -> RequestContext | str:
@@ -60,4 +61,5 @@ def resolve_request_context(*, session_id: str | None) -> RequestContext | str:
         chat_id=chat_id,
         session_id=selected_session_id,
         prompt_message_id=load_prompt_message_id(state_file, selected_session_id),
+        state_file=state_file,
     )
