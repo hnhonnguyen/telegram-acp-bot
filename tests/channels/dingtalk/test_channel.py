@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 from datetime import UTC, datetime, timedelta
 from typing import cast
@@ -17,6 +18,7 @@ from tests.channels.dingtalk.support import FakeAPI, make_config, make_message
 pytestmark = pytest.mark.asyncio
 
 WEBHOOK = "https://example.test/webhook"
+CARDS_FOR_TWO_PROMPTS = 2
 
 
 def make_channel(*, state_file=None, **config_kwargs) -> tuple[DingTalkChannel, FakeAPI]:
@@ -273,6 +275,59 @@ async def test_card_streaming_failure_keeps_the_card_for_the_final_answer():
 
     api.card_error = False
     assert await channel.finish_streaming_reply("cid-1", "final") is True
+
+
+async def test_concurrent_reply_previews_create_only_one_card():
+    channel, api = make_channel()
+    remember(channel)
+    api.create_gate = asyncio.Event()
+
+    first = asyncio.create_task(channel.send_activity("cid-1", reply_block("one")))
+    await asyncio.sleep(0)
+    second = asyncio.create_task(channel.send_activity("cid-1", reply_block("two")))
+    await asyncio.sleep(0)
+    api.create_gate.set()
+    await asyncio.gather(first, second)
+
+    assert len(api.cards) == 1
+    assert [item["content"] for item in api.card_streams] == ["one", "one\n\ntwo"]
+
+
+async def test_previews_after_finalization_are_ignored():
+    channel, api = make_channel()
+    remember(channel)
+    await channel.send_activity("cid-1", reply_block("partial"))
+    assert await channel.finish_streaming_reply("cid-1", "final") is True
+
+    await channel.send_activity("cid-1", reply_block("late"))
+
+    assert len(api.cards) == 1
+    assert len(api.card_streams) == 1
+
+
+async def test_a_new_prompt_starts_a_fresh_card():
+    channel, api = make_channel()
+    remember(channel)
+    await channel.send_activity("cid-1", reply_block("first"))
+    await channel.finish_streaming_reply("cid-1", "first answer")
+    await channel.set_typing("cid-1")
+
+    await channel.send_activity("cid-1", reply_block("second"))
+
+    assert len(api.cards) == CARDS_FOR_TWO_PROMPTS
+    assert api.card_streams[-1]["content"] == "second"
+
+
+async def test_set_typing_keeps_an_open_card():
+    channel, api = make_channel()
+    remember(channel)
+    await channel.send_activity("cid-1", reply_block("partial"))
+
+    await channel.set_typing("cid-1")
+    await channel.send_activity("cid-1", reply_block("partial more"))
+
+    assert len(api.cards) == 1
+    assert api.card_streams[-1]["content"] == "partial more"
 
 
 async def test_finishing_a_reply_without_a_card_returns_false():

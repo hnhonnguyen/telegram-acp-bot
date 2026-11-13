@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import logging
 from dataclasses import dataclass, replace
@@ -45,6 +46,7 @@ class _ReplyCard:
     committed: str = ""
     preview: str = ""
     inputing: bool = False
+    closed: bool = False
 
 
 class DingTalkChannel:
@@ -59,6 +61,7 @@ class DingTalkChannel:
         self._targets: dict[ChatId, ConversationTarget] = {}
         self._webhooks: dict[ChatId, tuple[str, datetime | None]] = {}
         self._cards: dict[ChatId, _ReplyCard] = {}
+        self._card_locks: dict[ChatId, asyncio.Lock] = {}
         self.capabilities = ChannelCapabilities(
             attachments=True,
             choices=True,
@@ -121,19 +124,21 @@ class DingTalkChannel:
         await self.send_markdown(chat_id, activity_markdown(block))
 
     async def finish_streaming_reply(self, chat_id: ChatId, text: str) -> bool:
-        card = self._cards.pop(chat_id, None)
-        if card is None:
-            return False
-        content = text.strip() or merge_segments(card.committed, card.preview)
-        try:
-            await self._api.update_card_data(
-                out_track_id=card.out_track_id,
-                card_data=finished_card_data(content),
-            )
-        except DingTalkAPIError:
-            logger.warning("DingTalk AI card finalization failed for chat %s", chat_id, exc_info=True)
-            return False
-        return True
+        async with self._card_lock(chat_id):
+            card = self._cards.get(chat_id)
+            if card is None or card.closed:
+                return False
+            card.closed = True
+            content = text.strip() or merge_segments(card.committed, card.preview)
+            try:
+                await self._api.update_card_data(
+                    out_track_id=card.out_track_id,
+                    card_data=finished_card_data(content),
+                )
+            except DingTalkAPIError:
+                logger.warning("DingTalk AI card finalization failed for chat %s", chat_id, exc_info=True)
+                return False
+            return True
 
     async def present_choice(self, chat_id: ChatId, request: ChoiceRequest) -> MessageId | None:
         await self.send_markdown(chat_id, choice_markdown(request))
@@ -143,7 +148,11 @@ class DingTalkChannel:
         del chat_id, message_id, text
 
     async def set_typing(self, chat_id: ChatId) -> None:
-        del chat_id
+        # Called when a new prompt starts. A finalized card from the previous prompt must not
+        # absorb previews from this one, so drop it and let the first preview create a new card.
+        card = self._cards.get(chat_id)
+        if card is not None and card.closed:
+            self._cards.pop(chat_id, None)
 
     async def set_reaction(self, chat_id: ChatId, message_id: MessageId, status: str) -> None:
         del chat_id, message_id, status
@@ -188,27 +197,37 @@ class DingTalkChannel:
         text = preview.strip()
         if not text:
             return
-        card = self._cards.get(chat_id)
-        if card is None:
-            card = await self._start_card(chat_id)
-            if card is None:
+        async with self._card_lock(chat_id):
+            card = self._cards.get(chat_id)
+            if card is not None and card.closed:
                 return
-        if card.preview and not text.startswith(card.preview):
-            card.committed = merge_segments(card.committed, card.preview)
-        card.preview = text
-        try:
-            if not card.inputing:
-                card.inputing = True
-                await self._api.update_card_data(
+            if card is None:
+                card = await self._start_card(chat_id)
+                if card is None:
+                    return
+            if card.preview and not text.startswith(card.preview):
+                card.committed = merge_segments(card.committed, card.preview)
+            card.preview = text
+            try:
+                if not card.inputing:
+                    card.inputing = True
+                    await self._api.update_card_data(
+                        out_track_id=card.out_track_id,
+                        card_data=inputing_card_data(),
+                    )
+                await self._api.stream_card_content(
                     out_track_id=card.out_track_id,
-                    card_data=inputing_card_data(),
+                    content=merge_segments(card.committed, text),
                 )
-            await self._api.stream_card_content(
-                out_track_id=card.out_track_id,
-                content=merge_segments(card.committed, text),
-            )
-        except DingTalkAPIError:
-            logger.warning("DingTalk AI card streaming failed for chat %s", chat_id, exc_info=True)
+            except DingTalkAPIError:
+                logger.warning("DingTalk AI card streaming failed for chat %s", chat_id, exc_info=True)
+
+    def _card_lock(self, chat_id: ChatId) -> asyncio.Lock:
+        lock = self._card_locks.get(chat_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._card_locks[chat_id] = lock
+        return lock
 
     async def _start_card(self, chat_id: ChatId) -> _ReplyCard | None:
         try:

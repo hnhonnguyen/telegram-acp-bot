@@ -656,6 +656,7 @@ class AgentChatBridge:
             raise ScheduledTaskDeferredError("chat is busy")  # noqa: TRY003
         async with lock:
             await self._ensure_session(task.chat_id)
+            await self._channel.set_typing(task.chat_id)
             reply = await self._service.prompt(chat_id=task.chat_id, text=prompt_text)
             if reply is None:
                 raise ScheduledTaskExecutionError("no active session")  # noqa: TRY003

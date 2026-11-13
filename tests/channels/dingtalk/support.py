@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -54,6 +55,7 @@ class FakeAPI:
     upload_media_id: str = "media-1"
     download_data: bytes = b"download-bytes"
     card_error: bool = False
+    create_gate: asyncio.Event | None = None
     replies: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
     texts: list[dict[str, Any]] = field(default_factory=list)
     markdowns: list[dict[str, Any]] = field(default_factory=list)
@@ -95,6 +97,8 @@ class FakeAPI:
         return self.download_data
 
     async def create_and_deliver_card(self, **kwargs: Any) -> dict[str, Any]:
+        if self.create_gate is not None:
+            await self.create_gate.wait()
         if self.card_error:
             raise DingTalkAPIError("card creation failed")  # noqa: TRY003
         self.cards.append(kwargs)
