@@ -236,6 +236,19 @@ async def test_activity_modes_degrade_when_the_channel_cannot_edit(tmp_path: Pat
     assert channel.activities == [(CHAT_ID, block)]
 
 
+async def test_reply_previews_are_skipped_when_the_channel_cannot_edit(tmp_path: Path):
+    _, service, channel, _ = make_bridge(
+        tmp_path,
+        capabilities=ChannelCapabilities(editable_messages=False),
+    )
+    preview = AgentActivityBlock(kind="reply", title="", status="in_progress", text="partial answer")
+
+    await service.emit_activity(CHAT_ID, preview)
+
+    assert channel.activities == []
+    assert channel.sent == []
+
+
 async def test_permission_choice_resolves_by_number_and_callback(tmp_path: Path):
     bridge, service, channel, _ = make_bridge(tmp_path)
     request = PermissionRequest(

@@ -264,6 +264,11 @@ class AgentChatBridge:
         return self._activity_modes.get(chat_id, self._config.activity_mode)
 
     async def on_activity(self, chat_id: ChatId, block: AgentActivityBlock) -> None:
+        # Reply previews are streaming updates of the final answer. A channel that cannot
+        # edit messages would turn each preview into a separate, increasingly complete
+        # message, so only the final answer is delivered there.
+        if block.kind == "reply" and not self._channel.capabilities.editable_messages:
+            return
         mode = self._activity_mode(chat_id)
         state = self._activity.setdefault(chat_id, _ActivityState())
         line = _activity_line(block)

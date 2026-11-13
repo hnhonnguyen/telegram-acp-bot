@@ -81,6 +81,11 @@ notifications and prompts can be sent after the process restarts or the session 
 Group history stores only the messages DingTalk delivered to the bot, which is a subset of the
 group conversation.
 
+DingTalk robot messages cannot be edited after they are sent, so the bot suppresses the agent's
+streaming reply previews and delivers the final answer once. Tool and reasoning activity still
+arrives as separate status messages; `compact` and `verbose` therefore degrade to that same
+one-message-per-update display.
+
 ## Files and images
 
 Inbound images and files are downloaded through the DingTalk file API and handed to the agent as
@@ -109,6 +114,7 @@ Telegram-only tools (`telegram_*`, reactions, MTProto) are not exposed.
 | Commands, sessions, resume | Supported |
 | Permission and elicitation choices | Numbered text replies (interactive cards not yet) |
 | Activity modes | `normal`; `compact` and `verbose` degrade to separate messages |
+| Streaming reply previews | Not shown; the final answer is delivered once |
 | Busy queue | Supported |
 | Files and images, inbound/outbound | Supported through the DingTalk media API |
 | Scheduled tasks | Supported, including proactive sends after restart |
