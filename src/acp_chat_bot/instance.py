@@ -14,6 +14,7 @@ from acp.schema import EnvVariable, HttpHeader, HttpMcpServer, McpServerStdio
 from acp_chat_bot.acp.models import ActivityMode, PermissionEventOutput, PermissionMode
 from acp_chat_bot.acp.service import AcpAgentService
 from acp_chat_bot.channels.dingtalk.api import DingTalkAPI
+from acp_chat_bot.channels.dingtalk.cards import AI_CARD_TEMPLATE_ID
 from acp_chat_bot.channels.dingtalk.channel import DingTalkChannel
 from acp_chat_bot.channels.dingtalk.config import DingTalkConfig
 from acp_chat_bot.channels.dingtalk.runtime import DingTalkRuntime
@@ -80,6 +81,8 @@ class BotInstanceSpec:
     dingtalk_robot_code: str = ""
     allowed_staff_ids: tuple[str, ...] = ()
     allowed_dingtalk_nicknames: tuple[str, ...] = ()
+    dingtalk_streaming_cards: bool = True
+    dingtalk_card_template_id: str = AI_CARD_TEMPLATE_ID
 
 
 @dataclass(slots=True, frozen=True)
@@ -302,6 +305,8 @@ def _build_dingtalk_instance(spec: BotInstanceSpec, *, stop_event: asyncio.Event
         activity_mode=spec.activity_mode,
         group_require_mention=spec.group_require_mention,
         group_history_size=spec.group_history_size,
+        streaming_cards=spec.dingtalk_streaming_cards,
+        card_template_id=spec.dingtalk_card_template_id,
     )
     chat_config = ChatConfig(
         default_workspace=workspace,

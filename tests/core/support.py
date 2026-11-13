@@ -246,8 +246,10 @@ class FakeChannel:
     )
     kind: str = "fake"
     edit_result: bool = True
+    finish_streaming_result: bool = False
     choice_message_id: MessageId | None = 1
     sent: list[SentMessage] = field(default_factory=list)
+    finished_streams: list[tuple[ChatId, str]] = field(default_factory=list)
     activities: list[tuple[ChatId, AgentActivityBlock]] = field(default_factory=list)
     choices: list[tuple[ChatId, ChoiceRequest]] = field(default_factory=list)
     updates: list[tuple[ChatId, MessageId, str]] = field(default_factory=list)
@@ -277,6 +279,10 @@ class FakeChannel:
     async def edit_markdown(self, chat_id: ChatId, message_id: MessageId, text: str) -> bool:
         self.updates.append((chat_id, message_id, text))
         return self.edit_result
+
+    async def finish_streaming_reply(self, chat_id: ChatId, text: str) -> bool:
+        self.finished_streams.append((chat_id, text))
+        return self.finish_streaming_result
 
     async def delete_message(self, chat_id: ChatId, message_id: MessageId) -> None:
         self.deleted.append((chat_id, message_id))

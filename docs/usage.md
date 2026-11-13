@@ -95,7 +95,8 @@ cancels pending work. See {doc}`deferred_followups` for recurring reminders.
 | Area | Telegram | DingTalk |
 |---|---|---|
 | Choice prompts | Inline buttons | Numbered replies |
-| Activity modes | `normal`, `compact`, `verbose` | `normal`; the other modes fall back to separate messages |
+| Streaming replies | Edited messages | AI Card updates; one final message when cards are unavailable |
+| Activity modes | `normal`, `compact`, `verbose` | `normal`; the other modes fall back to separate messages (reply streaming still uses a card) |
 | Typing indicator, reactions | Yes | No |
 | Group activation | @mention, reply, or every message when the mention gate is off | @mention only |
 | Large files | Bot API and MTProto fallback | DingTalk media API limits |

@@ -24,6 +24,7 @@ from acp_chat_bot.core.bridge import (
     BUSY_NOTICE,
     HELP_TEXT,
     NO_SESSION_TEXT,
+    PROMPT_FAILED_TEXT,
     AgentChatBridge,
     _parse_run_at,
 )
@@ -246,6 +247,37 @@ async def test_reply_previews_are_skipped_when_the_channel_cannot_edit(tmp_path:
     await service.emit_activity(CHAT_ID, preview)
 
     assert channel.activities == []
+    assert channel.sent == []
+
+
+async def test_reply_previews_feed_streaming_cards_and_final_text_finalizes_them(tmp_path: Path):
+    bridge, service, channel, _ = make_bridge(
+        tmp_path,
+        capabilities=ChannelCapabilities(editable_messages=False, streaming_cards=True),
+    )
+    channel.finish_streaming_result = True
+    preview = AgentActivityBlock(kind="reply", title="", status="in_progress", text="partial answer")
+
+    await service.emit_activity(CHAT_ID, preview)
+    service.reply = AgentReply(text="final answer")
+    await bridge.handle_inbound(message("hello"))
+
+    assert channel.activities == [(CHAT_ID, preview)]
+    assert channel.finished_streams == [(CHAT_ID, "final answer")]
+    assert channel.sent == []
+
+
+async def test_prompt_failure_finalizes_an_open_card(tmp_path: Path):
+    bridge, service, channel, _ = make_bridge(
+        tmp_path,
+        capabilities=ChannelCapabilities(editable_messages=False, streaming_cards=True),
+    )
+    channel.finish_streaming_result = True
+    service.prompt_error = RuntimeError("boom")
+
+    await bridge.handle_inbound(message("hello"))
+
+    assert channel.finished_streams == [(CHAT_ID, PROMPT_FAILED_TEXT)]
     assert channel.sent == []
 
 

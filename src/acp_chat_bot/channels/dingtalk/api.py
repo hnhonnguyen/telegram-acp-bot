@@ -6,8 +6,11 @@ import asyncio
 import json
 import time
 from typing import Any
+from uuid import uuid4
 
 import aiohttp
+
+from acp_chat_bot.channels.dingtalk.cards import CARD_CONTENT_KEY
 
 DINGTALK_TIMEOUT_SECONDS = 30.0
 TOKEN_EXPIRY_MARGIN_SECONDS = 60.0
@@ -166,6 +169,59 @@ class DingTalkAPI:
             "msgParam": json.dumps(msg_param, ensure_ascii=False),
         }
         return await self._request("POST", "/v1.0/robot/oToMessages/batchSend", json_body=body, headers=headers)
+
+    async def create_and_deliver_card(  # noqa: PLR0913
+        self,
+        *,
+        card_template_id: str,
+        out_track_id: str,
+        card_data: dict[str, str],
+        conversation_id: str,
+        conversation_type: str,
+        user_id: str,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {
+            "cardTemplateId": card_template_id,
+            "outTrackId": out_track_id,
+            "cardData": {"cardParamMap": card_data},
+            "callbackType": "STREAM",
+            "imGroupOpenSpaceModel": {"supportForward": True},
+            "imRobotOpenSpaceModel": {"supportForward": True},
+        }
+        if conversation_type == "group":
+            body |= {
+                "openSpaceId": f"dtv1.card//IM_GROUP.{conversation_id}",
+                "imGroupOpenDeliverModel": {"robotCode": self._robot_code},
+            }
+        else:
+            body |= {
+                "openSpaceId": f"dtv1.card//IM_ROBOT.{user_id}",
+                "imRobotOpenDeliverModel": {"spaceType": "IM_ROBOT"},
+            }
+        return await self._request("POST", "/v1.0/card/instances/createAndDeliver", json_body=body)
+
+    async def stream_card_content(
+        self,
+        *,
+        out_track_id: str,
+        content: str,
+        finalize: bool = False,
+        error: bool = False,
+    ) -> dict[str, Any]:
+        body = {
+            "outTrackId": out_track_id,
+            "guid": uuid4().hex,
+            "key": CARD_CONTENT_KEY,
+            "content": content,
+            "isFull": True,
+            "isFinalize": finalize,
+            "isError": error,
+        }
+        return await self._request("PUT", "/v1.0/card/streaming", json_body=body)
+
+    async def update_card_data(self, *, out_track_id: str, card_data: dict[str, str]) -> dict[str, Any]:
+        body = {"outTrackId": out_track_id, "cardData": {"cardParamMap": card_data}}
+        return await self._request("PUT", "/v1.0/card/instances", json_body=body)
 
     async def download_message_file(self, download_code: str) -> bytes:
         token = await self.get_access_token()

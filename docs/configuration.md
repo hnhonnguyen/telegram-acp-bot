@@ -68,7 +68,9 @@ follow the XDG Base Directory specification like any other Linux program.
     "allowed_nicknames": ["alice"],
     "schedule_languages": ["en", "es"],
     "group_require_mention": true,
-    "group_history_size": 200
+    "group_history_size": 200,
+    "streaming_cards": true,
+    "card_template_id": "382e4302-551d-4880-bf29-a30acfab2e71.schema"
   },
   "acp": {
     "agent_command": "npx @zed-industries/codex-acp",
@@ -130,6 +132,11 @@ Telegram-only settings (`telegram.api_id`, `telegram.api_hash`, `telegram.status
 `telegram.group_media_queue`) do not apply to DingTalk. DingTalk has no typing indicator or
 reaction API, so the bot treats both as unsupported there. `dingtalk.group_require_mention`
 defaults to `true` because DingTalk only delivers group messages that mention the robot.
+
+`dingtalk.streaming_cards` (default `true`) streams reply previews into a DingTalk AI Card and
+finalizes it with the complete answer. It falls back to one final markdown message when card
+creation is refused. `dingtalk.card_template_id` overrides the AI Markdown card template the bot
+uses for that, defaulting to the generic template shipped with the DingTalk SDK.
 
 See {doc}`dingtalk` for the DingTalk setup guide.
 

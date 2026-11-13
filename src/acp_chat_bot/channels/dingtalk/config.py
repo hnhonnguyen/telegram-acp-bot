@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from acp_chat_bot.acp.models import ActivityMode
+from acp_chat_bot.channels.dingtalk.cards import AI_CARD_TEMPLATE_ID
 from acp_chat_bot.mcp.state import MAX_GROUP_HISTORY_PER_CHAT
 
 
@@ -24,3 +25,5 @@ class DingTalkConfig:
     group_history_size: int = MAX_GROUP_HISTORY_PER_CHAT
     api_base_url: str = "https://api.dingtalk.com"
     max_text_length: int = 4000
+    streaming_cards: bool = True
+    card_template_id: str = AI_CARD_TEMPLATE_ID

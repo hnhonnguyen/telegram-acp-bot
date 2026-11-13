@@ -74,6 +74,7 @@ HELP_TEXT = (
 )
 BUSY_NOTICE = "The agent is busy. Your message is queued and will run when the current prompt finishes."
 NO_SESSION_TEXT = "No active session. Send a prompt or use `/new` to start one."
+PROMPT_FAILED_TEXT = "The agent could not process that message."
 UNKNOWN_CHOICE_TEXT = "Please answer with one of the numbered options."
 CRON_MIN_ARGS = 3
 
@@ -175,7 +176,11 @@ class AgentChatBridge:
                 await self._run_prompt(message)
             except Exception:
                 logger.exception("Prompt failed for chat_id=%s", message.chat_id)
-                await self._send(message.chat_id, "The agent could not process that message.")
+                delivered = False
+                if self._channel.capabilities.streaming_cards:
+                    delivered = await self._channel.finish_streaming_reply(message.chat_id, PROMPT_FAILED_TEXT)
+                if not delivered:
+                    await self._send(message.chat_id, PROMPT_FAILED_TEXT)
         await self._drain_busy(message.chat_id)
 
     async def _run_prompt(self, message: InboundMessage) -> None:
@@ -227,9 +232,11 @@ class AgentChatBridge:
 
     async def _deliver_reply(self, chat_id: ChatId, reply: AgentReply, *, reply_to: MessageId | None = None) -> None:
         text = reply.text.strip()
-        if text:
+        delivered = False
+        if self._channel.capabilities.streaming_cards:
+            delivered = await self._channel.finish_streaming_reply(chat_id, text)
+        if text and not delivered:
             activity = self._activity.get(chat_id)
-            delivered = False
             if (
                 activity is not None
                 and activity.message_id is not None
@@ -264,10 +271,12 @@ class AgentChatBridge:
         return self._activity_modes.get(chat_id, self._config.activity_mode)
 
     async def on_activity(self, chat_id: ChatId, block: AgentActivityBlock) -> None:
-        # Reply previews are streaming updates of the final answer. A channel that cannot
-        # edit messages would turn each preview into a separate, increasingly complete
-        # message, so only the final answer is delivered there.
-        if block.kind == "reply" and not self._channel.capabilities.editable_messages:
+        # Reply previews are streaming updates of the final answer. A channel that can
+        # neither edit messages nor stream cards would turn each preview into a separate,
+        # increasingly complete message, so only the final answer is delivered there.
+        if block.kind == "reply" and not (
+            self._channel.capabilities.editable_messages or self._channel.capabilities.streaming_cards
+        ):
             return
         mode = self._activity_mode(chat_id)
         state = self._activity.setdefault(chat_id, _ActivityState())

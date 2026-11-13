@@ -8,6 +8,7 @@ import pytest
 
 from acp_chat_bot.acp.models import AgentActivityBlock, FilePayload, ImagePayload
 from acp_chat_bot.channels.dingtalk.api import DingTalkAPI, DingTalkAPIError
+from acp_chat_bot.channels.dingtalk.cards import AI_CARD_TEMPLATE_ID
 from acp_chat_bot.channels.dingtalk.channel import DingTalkChannel
 from acp_chat_bot.core.chat import ChoiceOption, ChoiceRequest, InboundAttachment
 from acp_chat_bot.mcp.state import load_conversation_target
@@ -178,6 +179,131 @@ async def test_send_activity_renders_the_block_as_markdown():
 
     text = api.replies[-1][1]["markdown"]["text"]
     assert "**⚙️ Running**: ls -la" in text
+
+
+def reply_block(text: str) -> AgentActivityBlock:
+    return AgentActivityBlock(kind="reply", title="", status="in_progress", text=text)
+
+
+async def test_reply_activity_streams_into_an_ai_card():
+    channel, api = make_channel()
+    remember(channel)
+
+    await channel.send_activity("cid-1", reply_block("Hello"))
+
+    card = api.cards[0]
+    assert card["card_template_id"] == AI_CARD_TEMPLATE_ID
+    assert card["conversation_id"] == "cid-1"
+    assert card["conversation_type"] == "private"
+    assert card["user_id"] == "staff-1"
+    assert card["card_data"] == {"flowStatus": "1"}
+    assert api.card_updates[0]["card_data"]["flowStatus"] == "2"
+    assert api.card_streams[0]["out_track_id"] == card["out_track_id"]
+    assert api.card_streams[0]["content"] == "Hello"
+    assert api.replies == []
+
+
+async def test_reply_previews_commit_earlier_segments_when_text_restarts():
+    channel, api = make_channel()
+    remember(channel)
+
+    await channel.send_activity("cid-1", reply_block("Hello"))
+    await channel.send_activity("cid-1", reply_block("Hello world"))
+    await channel.send_activity("cid-1", reply_block("Second part"))
+
+    assert [item["content"] for item in api.card_streams] == [
+        "Hello",
+        "Hello world",
+        "Hello world\n\nSecond part",
+    ]
+
+
+async def test_finish_streaming_reply_finalizes_the_card():
+    channel, api = make_channel()
+    remember(channel)
+    await channel.send_activity("cid-1", reply_block("partial"))
+
+    assert await channel.finish_streaming_reply("cid-1", "Final answer") is True
+
+    update = api.card_updates[-1]
+    assert update["out_track_id"] == api.cards[0]["out_track_id"]
+    assert update["card_data"]["flowStatus"] == "3"
+    assert update["card_data"]["msgContent"] == "Final answer"
+    assert await channel.finish_streaming_reply("cid-1", "again") is False
+
+
+async def test_finish_streaming_reply_falls_back_to_the_last_preview():
+    channel, api = make_channel()
+    remember(channel)
+    await channel.send_activity("cid-1", reply_block("partial"))
+
+    assert await channel.finish_streaming_reply("cid-1", "  ") is True
+
+    assert api.card_updates[-1]["card_data"]["msgContent"] == "partial"
+
+
+async def test_card_finalization_failure_returns_false():
+    channel, api = make_channel()
+    remember(channel)
+    await channel.send_activity("cid-1", reply_block("partial"))
+    api.card_error = True
+
+    assert await channel.finish_streaming_reply("cid-1", "final") is False
+
+
+async def test_empty_reply_previews_do_not_create_a_card():
+    channel, api = make_channel()
+    remember(channel)
+
+    await channel.send_activity("cid-1", reply_block("   "))
+
+    assert api.cards == []
+
+
+async def test_card_streaming_failure_keeps_the_card_for_the_final_answer():
+    channel, api = make_channel()
+    remember(channel)
+    await channel.send_activity("cid-1", reply_block("first"))
+    api.card_error = True
+
+    await channel.send_activity("cid-1", reply_block("first more"))
+
+    assert api.cards
+    assert len(api.card_streams) == 1
+
+    api.card_error = False
+    assert await channel.finish_streaming_reply("cid-1", "final") is True
+
+
+async def test_finishing_a_reply_without_a_card_returns_false():
+    channel, _ = make_channel()
+
+    assert await channel.finish_streaming_reply("cid-1", "final") is False
+
+
+async def test_card_creation_failure_falls_back_to_plain_messages():
+    channel, api = make_channel()
+    remember(channel)
+    api.card_error = True
+
+    await channel.send_activity("cid-1", reply_block("partial"))
+
+    assert api.cards == []
+    assert channel.capabilities.streaming_cards is False
+    assert await channel.finish_streaming_reply("cid-1", "final") is False
+
+    await channel.send_markdown("cid-1", "final")
+    assert api.replies[-1][1]["markdown"]["text"] == "final"
+
+
+async def test_reply_activity_uses_markdown_when_cards_are_disabled():
+    channel, api = make_channel(streaming_cards=False)
+    remember(channel)
+
+    await channel.send_activity("cid-1", reply_block("partial"))
+
+    assert api.cards == []
+    assert "**Reply**" in api.replies[-1][1]["markdown"]["text"]
 
 
 async def test_present_choice_sends_numbered_options_and_returns_an_id():

@@ -131,6 +131,65 @@ async def test_send_image_and_file_payloads():
     assert "a.txt" in session.calls[1]["json"]["msgParam"]
 
 
+async def test_create_and_deliver_card_targets_group_and_private_spaces():
+    api, session = make_api(FakeResponse(text="{}"), FakeResponse(text="{}"))
+
+    await api.create_and_deliver_card(
+        card_template_id="tpl",
+        out_track_id="card-1",
+        card_data={"flowStatus": "1"},
+        conversation_id="cid",
+        conversation_type="group",
+        user_id="u1",
+    )
+    group_call = session.calls[0]
+    assert group_call["url"] == "https://api.test/v1.0/card/instances/createAndDeliver"
+    assert group_call["json"]["openSpaceId"] == "dtv1.card//IM_GROUP.cid"
+    assert group_call["json"]["imGroupOpenDeliverModel"] == {"robotCode": "robot-code"}
+    assert group_call["json"]["cardData"]["cardParamMap"] == {"flowStatus": "1"}
+
+    await api.create_and_deliver_card(
+        card_template_id="tpl",
+        out_track_id="card-2",
+        card_data={"flowStatus": "1"},
+        conversation_id="cid",
+        conversation_type="private",
+        user_id="u1",
+    )
+    private_call = session.calls[1]
+    assert private_call["json"]["openSpaceId"] == "dtv1.card//IM_ROBOT.u1"
+    assert private_call["json"]["imRobotOpenDeliverModel"] == {"spaceType": "IM_ROBOT"}
+
+
+async def test_stream_card_content_uses_the_streaming_endpoint():
+    api, session = make_api(FakeResponse(text="{}"))
+
+    await api.stream_card_content(out_track_id="card-1", content="hello")
+
+    call = session.calls[0]
+    assert call["method"] == "PUT"
+    assert call["url"] == "https://api.test/v1.0/card/streaming"
+    assert call["json"]["outTrackId"] == "card-1"
+    assert call["json"]["key"] == "msgContent"
+    assert call["json"]["content"] == "hello"
+    assert call["json"]["isFull"] is True
+    assert call["json"]["isFinalize"] is False
+
+
+async def test_update_card_data_uses_the_card_instance_endpoint():
+    api, session = make_api(FakeResponse(text="{}"))
+
+    await api.update_card_data(out_track_id="card-1", card_data={"flowStatus": "3", "msgContent": "done"})
+
+    call = session.calls[0]
+    assert call["method"] == "PUT"
+    assert call["url"] == "https://api.test/v1.0/card/instances"
+    assert call["json"] == {
+        "outTrackId": "card-1",
+        "cardData": {"cardParamMap": {"flowStatus": "3", "msgContent": "done"}},
+    }
+
+
 async def test_download_message_file_fetches_the_returned_url():
     api, session = make_api(
         FakeResponse(text='{"downloadUrl": "https://download.test/file"}'),

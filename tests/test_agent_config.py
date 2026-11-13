@@ -408,6 +408,31 @@ def test_a_dingtalk_agent_inherits_the_base_identity():
     assert spec.mtproto_api_hash == ""
 
 
+def test_dingtalk_agents_inherit_and_override_card_streaming():
+    base = dingtalk_spec(dingtalk_streaming_cards=False, dingtalk_card_template_id="base.schema")
+
+    inherited, overridden = resolve(
+        base=base,
+        agents={
+            "inherited": {},
+            "overridden": {
+                "dingtalk": {
+                    "client_id": "other-id",
+                    "client_secret": "other-secret",
+                    "allowed_staff_ids": ["staff-2"],
+                    "streaming_cards": True,
+                    "card_template_id": "agent.schema",
+                }
+            },
+        },
+    )
+
+    assert inherited.dingtalk_streaming_cards is False
+    assert inherited.dingtalk_card_template_id == "base.schema"
+    assert overridden.dingtalk_streaming_cards is True
+    assert overridden.dingtalk_card_template_id == "agent.schema"
+
+
 def test_a_telegram_flagship_can_declare_a_dingtalk_agent():
     agent = {
         "channel": "dingtalk",

@@ -7,6 +7,8 @@ from typing import Any
 
 from dingtalk_stream import ChatbotMessage
 
+from acp_chat_bot.channels.dingtalk.api import DingTalkAPIError
+from acp_chat_bot.channels.dingtalk.cards import AI_CARD_TEMPLATE_ID
 from acp_chat_bot.channels.dingtalk.config import DingTalkConfig
 
 
@@ -51,6 +53,7 @@ class FakeSession:
 class FakeAPI:
     upload_media_id: str = "media-1"
     download_data: bytes = b"download-bytes"
+    card_error: bool = False
     replies: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
     texts: list[dict[str, Any]] = field(default_factory=list)
     markdowns: list[dict[str, Any]] = field(default_factory=list)
@@ -58,6 +61,9 @@ class FakeAPI:
     files: list[dict[str, Any]] = field(default_factory=list)
     uploads: list[dict[str, Any]] = field(default_factory=list)
     downloads: list[str] = field(default_factory=list)
+    cards: list[dict[str, Any]] = field(default_factory=list)
+    card_streams: list[dict[str, Any]] = field(default_factory=list)
+    card_updates: list[dict[str, Any]] = field(default_factory=list)
     closed: bool = False
 
     async def reply_webhook(self, webhook: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -88,16 +94,36 @@ class FakeAPI:
         self.downloads.append(download_code)
         return self.download_data
 
+    async def create_and_deliver_card(self, **kwargs: Any) -> dict[str, Any]:
+        if self.card_error:
+            raise DingTalkAPIError("card creation failed")  # noqa: TRY003
+        self.cards.append(kwargs)
+        return {}
+
+    async def stream_card_content(self, **kwargs: Any) -> dict[str, Any]:
+        if self.card_error:
+            raise DingTalkAPIError("card streaming failed")  # noqa: TRY003
+        self.card_streams.append(kwargs)
+        return {}
+
+    async def update_card_data(self, **kwargs: Any) -> dict[str, Any]:
+        if self.card_error:
+            raise DingTalkAPIError("card update failed")  # noqa: TRY003
+        self.card_updates.append(kwargs)
+        return {}
+
     async def close(self) -> None:
         self.closed = True
 
 
-def make_config(
+def make_config(  # noqa: PLR0913
     *,
     allowed_staff_ids: frozenset[str] = frozenset({"staff-1"}),
     allowed_nicknames: frozenset[str] = frozenset(),
     max_text_length: int = 4000,
     group_allow: bool = True,
+    streaming_cards: bool = True,
+    card_template_id: str = AI_CARD_TEMPLATE_ID,
 ) -> DingTalkConfig:
     return DingTalkConfig(
         client_id="client-id",
@@ -108,6 +134,8 @@ def make_config(
         default_workspace=Path("/workspace"),
         max_text_length=max_text_length,
         group_require_mention=group_allow,
+        streaming_cards=streaming_cards,
+        card_template_id=card_template_id,
     )
 
 

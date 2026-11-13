@@ -47,6 +47,14 @@ class Channel(Protocol):
 
     async def edit_markdown(self, chat_id: ChatId, message_id: MessageId, text: str) -> bool: ...
 
+    async def finish_streaming_reply(self, chat_id: ChatId, text: str) -> bool:
+        """Replace an in-progress streamed reply with its final text.
+
+        Return ``True`` when a streamed reply was finalized, so the bridge can skip
+        sending the text again. Channels without streaming return ``False``.
+        """
+        ...
+
     async def delete_message(self, chat_id: ChatId, message_id: MessageId) -> None: ...
 
     async def send_activity(self, chat_id: ChatId, block: AgentActivityBlock) -> None: ...

@@ -81,10 +81,18 @@ notifications and prompts can be sent after the process restarts or the session 
 Group history stores only the messages DingTalk delivered to the bot, which is a subset of the
 group conversation.
 
-DingTalk robot messages cannot be edited after they are sent, so the bot suppresses the agent's
-streaming reply previews and delivers the final answer once. Tool and reasoning activity still
-arrives as separate status messages; `compact` and `verbose` therefore degrade to that same
-one-message-per-update display.
+DingTalk robot messages cannot be edited after they are sent. To still show progress, the bot
+renders the agent's streaming reply previews into a DingTalk **AI Card** and finalizes that card
+with the complete answer. Tool and reasoning activity still arrives as separate status messages;
+`compact` and `verbose` therefore degrade to that same one-message-per-update display for
+activity.
+
+AI Card streaming is on by default (`dingtalk.streaming_cards`) and needs the tenant application
+to be allowed to create and stream cards. When card creation fails — for example because the
+application lacks the permission — the bot logs a warning, disables card streaming for that
+process and falls back to one final markdown message, so the answer is never lost. The card
+template defaults to the generic AI Markdown template shipped with the DingTalk SDK; override it
+with `dingtalk.card_template_id` when your tenant uses its own template.
 
 ## Files and images
 
@@ -114,7 +122,7 @@ Telegram-only tools (`telegram_*`, reactions, MTProto) are not exposed.
 | Commands, sessions, resume | Supported |
 | Permission and elicitation choices | Numbered text replies (interactive cards not yet) |
 | Activity modes | `normal`; `compact` and `verbose` degrade to separate messages |
-| Streaming reply previews | Not shown; the final answer is delivered once |
+| Streaming replies | AI Card updates; one final markdown message when cards are unavailable |
 | Busy queue | Supported |
 | Files and images, inbound/outbound | Supported through the DingTalk media API |
 | Scheduled tasks | Supported, including proactive sends after restart |
@@ -122,6 +130,7 @@ Telegram-only tools (`telegram_*`, reactions, MTProto) are not exposed.
 | Typing indicator and reactions | Not available on DingTalk |
 | MTProto-sized uploads | No equivalent |
 
-Interactive cards and streaming card updates depend on the permissions and card templates of the
-tenant application. They are planned after a tenant spike; the numbered fallback is always
-available.
+Interactive cards for permission and elicitation choices depend on the permissions and card
+templates of the tenant application. They are planned after a tenant spike; the numbered
+fallback is always available. Reply streaming uses the AI Card API and the generic AI Markdown
+template out of the box.

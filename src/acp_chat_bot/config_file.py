@@ -122,13 +122,14 @@ def _validate_channel(value: object, path: Path, where: str = "") -> None:
 def _validate_dingtalk_section(dt: dict[str, Any], path: Path, where: str = "") -> None:
     if not isinstance(dt, dict):
         raise _err(path, "'dingtalk' must be a JSON object", where)
-    for key in ("client_id", "client_secret", "robot_code"):
+    for key in ("client_id", "client_secret", "robot_code", "card_template_id"):
         if key in dt and not isinstance(dt[key], str):
             raise _err(path, f"'dingtalk.{key}' must be a string", where)
     for key in ("allowed_staff_ids", "allowed_nicknames", "schedule_languages"):
         if key in dt and (not isinstance(dt[key], list) or not all(isinstance(item, str) for item in dt[key])):
             raise _err(path, f"'dingtalk.{key}' must be a list of strings", where)
     _require_optional_bool(dt, path, "group_require_mention", where, label="dingtalk")
+    _require_optional_bool(dt, path, "streaming_cards", where, label="dingtalk")
     _require_optional_non_negative_int(dt, path, "group_history_size", where, label="dingtalk")
 
 

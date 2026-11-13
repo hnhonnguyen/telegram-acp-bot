@@ -174,6 +174,23 @@ def _spec_for(
         mtproto_api_id = None
         mtproto_api_hash = ""
 
+    dingtalk_streaming_cards = bool(
+        dingtalk_cfg.get(
+            "streaming_cards",
+            inherited_dingtalk.dingtalk_streaming_cards
+            if inherited_dingtalk is not None
+            else base.dingtalk_streaming_cards,
+        )
+    )
+    dingtalk_card_template_id = str(
+        dingtalk_cfg.get(
+            "card_template_id",
+            inherited_dingtalk.dingtalk_card_template_id
+            if inherited_dingtalk is not None
+            else base.dingtalk_card_template_id,
+        )
+    )
+
     return BotInstanceSpec(
         name=name,
         channel=channel,
@@ -187,6 +204,8 @@ def _spec_for(
         dingtalk_robot_code=dingtalk_robot_code,
         allowed_staff_ids=allowed_staff_ids,
         allowed_dingtalk_nicknames=allowed_nicknames,
+        dingtalk_streaming_cards=dingtalk_streaming_cards,
+        dingtalk_card_template_id=dingtalk_card_template_id,
         workspace=acp_cfg.get("workspace", base.workspace),
         activity_mode=acp_cfg.get("activity_mode", base.activity_mode),
         schedule_languages=tuple(schedule_languages),

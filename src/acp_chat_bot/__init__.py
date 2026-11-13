@@ -19,6 +19,7 @@ from typing import Any, cast
 from acp_chat_bot.acp.models import ActivityMode, PermissionEventOutput, PermissionMode
 from acp_chat_bot.agent_config import agent_tokens, resolve_specs
 from acp_chat_bot.agent_identity import DEFAULT_AGENT_NAME
+from acp_chat_bot.channels.dingtalk.cards import AI_CARD_TEMPLATE_ID
 from acp_chat_bot.channels.telegram.bot import StatusReactionLevel
 from acp_chat_bot.config_file import ConfigFileError, discover_config_path, load_config_file
 from acp_chat_bot.core.config import ChannelKind
@@ -454,6 +455,8 @@ def _base_spec(
         dingtalk_robot_code=opts.dingtalk_robot_code or opts.dingtalk_client_id,
         allowed_staff_ids=tuple(allowed_staff_ids),
         allowed_dingtalk_nicknames=tuple(allowed_dingtalk_nicknames),
+        dingtalk_streaming_cards=bool(dingtalk_cfg.get("streaming_cards", True)),
+        dingtalk_card_template_id=str(dingtalk_cfg.get("card_template_id", AI_CARD_TEMPLATE_ID)),
         workspace=opts.workspace,
         activity_mode=cast("ActivityMode", opts.activity_mode),
         schedule_languages=tuple(schedule_languages),

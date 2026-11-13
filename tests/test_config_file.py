@@ -394,7 +394,7 @@ def test_dingtalk_must_be_an_object(tmp_path: Path):
         load_config_file(write_config(tmp_path, {"dingtalk": "credentials"}))
 
 
-@pytest.mark.parametrize("key", ["client_id", "client_secret", "robot_code"])
+@pytest.mark.parametrize("key", ["client_id", "client_secret", "robot_code", "card_template_id"])
 def test_dingtalk_credentials_must_be_strings(key: str, tmp_path: Path):
     with pytest.raises(ConfigFileError, match=rf"'dingtalk\.{key}' must be a string"):
         load_config_file(write_config(tmp_path, {"dingtalk": {key: 42}}))
@@ -414,6 +414,11 @@ def test_dingtalk_group_options_are_validated(tmp_path: Path):
         load_config_file(write_config(tmp_path, {"dingtalk": {"group_history_size": "200"}}))
 
 
+def test_dingtalk_streaming_cards_must_be_a_boolean(tmp_path: Path):
+    with pytest.raises(ConfigFileError, match=r"'dingtalk\.streaming_cards' must be a boolean"):
+        load_config_file(write_config(tmp_path, {"dingtalk": {"streaming_cards": "yes"}}))
+
+
 def test_dingtalk_section_loads(tmp_path: Path):
     dingtalk = {
         "client_id": "id",
@@ -424,6 +429,8 @@ def test_dingtalk_section_loads(tmp_path: Path):
         "schedule_languages": ["vi"],
         "group_require_mention": True,
         "group_history_size": 10,
+        "streaming_cards": False,
+        "card_template_id": "template.schema",
     }
     data = {"channel": "dingtalk", "dingtalk": dingtalk}
 
