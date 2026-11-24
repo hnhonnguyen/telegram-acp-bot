@@ -502,7 +502,8 @@ to add `@yourbot` wakes the bot, and a `compact` answer that replaces its own st
 of the room in its final form. Two of your own bots in one group hear each other the same way once Telegram
 allows bot-to-bot traffic (BotFather → the bot → Bot-to-Bot Communication Mode, plus privacy mode off or admin
 rights), and each hears the other under its `@username` — so both are on the allowlist if you want them to
-answer one another.
+answer one another. Answers sent as Bot API rich messages are read the same way, so a peer's final Markdown
+answer still counts as an address even though it carries no plain `text` field.
 
 That exchange is bounded, because an answer written to notify a person is also an answer that keeps a bot
 addressed. The bot counts answers that came from another bot and stops after eight in a row, until someone

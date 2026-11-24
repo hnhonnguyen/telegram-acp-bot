@@ -165,11 +165,58 @@ def _text_mentions_handle(text: str | None, entities: tuple[MessageEntity, ...] 
     )
 
 
+RICH_MESSAGE_KEY = "rich_message"
+_RICH_TEXT_CONTAINERS = ("blocks", "items", "cells", "rows", "content", "caption")
+
+
+def _rich_message(message: Message) -> Mapping[str, Any] | None:
+    """Return the raw rich message payload, which python-telegram-bot keeps in `api_kwargs`."""
+    rich = getattr(message, "api_kwargs", {}).get(RICH_MESSAGE_KEY)
+    return rich if isinstance(rich, Mapping) else None
+
+
+def _rich_plain_text(value: object) -> str:
+    """Flatten a RichMessage or RichText tree into the text an agent can read."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return "".join(_rich_plain_text(item) for item in value)
+    if isinstance(value, Mapping):
+        if value.get("text") is not None:
+            return _rich_plain_text(value["text"])
+        rendered = (_rich_plain_text(value.get(key)) for key in _RICH_TEXT_CONTAINERS)
+        return "\n".join(text for text in rendered if text)
+    return ""
+
+
+def _rich_mentions_handle(value: object, handle: str) -> bool:
+    """True when a rich message carries a mention entity for *handle*."""
+    if isinstance(value, Mapping):
+        if value.get("type") == "mention":
+            username = str(value.get("username") or "").lstrip("@").strip().lower()
+            if username == handle:
+                return True
+        return any(_rich_mentions_handle(item, handle) for item in value.values())
+    if isinstance(value, list):
+        return any(_rich_mentions_handle(item, handle) for item in value)
+    return False
+
+
+def _message_text(message: Message) -> str:
+    """The readable text of a message, including messages sent as Bot API rich messages."""
+    return message.text or message.caption or _rich_plain_text(_rich_message(message) or {})
+
+
 def _mentions_handle(message: Message, handle: str) -> bool:
-    """True when a message names this bot, whichever of its text or caption carries the mention."""
+    """True when a message names this bot, whichever of its text, caption or rich body carries it."""
     if _text_mentions_handle(message.text, getattr(message, "entities", None), handle):
         return True
-    return _text_mentions_handle(message.caption, getattr(message, "caption_entities", None), handle)
+    if _text_mentions_handle(message.caption, getattr(message, "caption_entities", None), handle):
+        return True
+    rich = _rich_message(message)
+    if rich is None:
+        return False
+    return _rich_mentions_handle(rich, handle) or _text_mentions_handle(_rich_plain_text(rich), None, handle)
 
 
 def _media_references(message: Message) -> tuple[tuple[str, str | None], ...]:
@@ -301,6 +348,21 @@ class _AgentCommandMessage(filters.MessageFilter):
 
 _AGENT_COMMAND = _AgentCommandMessage()
 
+
+class _RichMessageFilter(filters.MessageFilter):
+    """Match Bot API rich messages, whose body lives in `api_kwargs` instead of `text`."""
+
+    __slots__ = ()
+
+    def __init__(self) -> None:
+        super().__init__(name="filters.RichMessage")
+
+    def filter(self, message: Message) -> bool:
+        return _rich_message(message) is not None
+
+
+_RICH_MESSAGE = _RichMessageFilter()
+
 _BotCommandHandler = Callable[[Update, ContextTypes.DEFAULT_TYPE], Awaitable[None]]
 
 
@@ -406,6 +468,7 @@ class TelegramBridge:
         app.add_handler(
             MessageHandler((filters.TEXT | filters.PHOTO | filters.Document.ALL) & ~_AGENT_COMMAND, self.on_message)
         )
+        app.add_handler(MessageHandler(_RICH_MESSAGE, self.on_message))
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         del context
@@ -1817,7 +1880,7 @@ class TelegramBridge:
         if message is None:
             return None
         chat_id = self._chat_id(update)
-        text = text_override if text_override is not None else (message.text or message.caption or "")
+        text = text_override if text_override is not None else _message_text(message)
         images = await self._extract_prompt_images(message=message, context=context)
         files = await self._extract_prompt_files(message=message, context=context)
         if not text and not images and not files:
@@ -2238,7 +2301,7 @@ class TelegramBridge:
         message = self._anchor_message(update)
         if chat is None or message is None or getattr(chat, "type", None) not in GROUP_CHAT_TYPES:
             return
-        text = message.text or message.caption or ""
+        text = _message_text(message)
         if not text.strip():
             return
 

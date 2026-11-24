@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -158,12 +158,14 @@ class DummyMessage:
         entities: Sequence[MessageEntity] | None = None,
         caption_entities: Sequence[MessageEntity] | None = None,
         reply_to_message: object | None = None,
+        api_kwargs: Mapping[str, object] | None = None,
     ) -> None:
         self.message_id = message_id
         self.chat_id = chat_id
         self._bot = bot if bot is not None else MessageReplyBot(self)
         self.text = text
         self.caption = caption
+        self.api_kwargs = dict(api_kwargs or {})
         self.photo = list(photo) if photo is not None else []
         self.document = document
         self.entities = list(entities) if entities is not None else []
@@ -763,6 +765,7 @@ def make_update(  # noqa: PLR0913
     entities: Sequence[MessageEntity] | None = None,
     caption_entities: Sequence[MessageEntity] | None = None,
     reply_to_message: object | None = None,
+    rich_message: Mapping[str, object] | None = None,
 ):
     message = (
         DummyMessage(
@@ -775,6 +778,7 @@ def make_update(  # noqa: PLR0913
             entities=entities,
             caption_entities=caption_entities,
             reply_to_message=reply_to_message,
+            api_kwargs={"rich_message": rich_message} if rich_message is not None else None,
         )
         if with_message
         else None

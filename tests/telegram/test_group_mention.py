@@ -2,12 +2,16 @@ from __future__ import annotations
 
 # ruff: noqa: F403, F405, I001
 
-from acp_chat_bot.channels.telegram.bridge import TelegramBridge
+from acp_chat_bot.channels.telegram.bridge import _RICH_MESSAGE, TelegramBridge
 from acp_chat_bot.channels.telegram.constants import GROUP_BOT_TURN_BUDGET, GROUP_BUDGET_HOLD_TEXT
 from tests.telegram.support import *
 
 EXPECTED_ECHO_SUFFIX = "alo"
 EXPECTED_IMAGE_ACK = "images=1"
+
+
+def rich_message(*parts: object) -> dict[str, object]:
+    return {"blocks": [{"type": "paragraph", "text": list(parts)}]}
 
 
 def assert_not_answered(update):
@@ -80,6 +84,52 @@ async def test_group_photo_without_mentioned_caption_is_ignored():
     await bridge.on_message(update, context)
 
     assert_not_answered(update)
+
+
+async def test_group_rich_message_with_mention_is_answered():
+    bridge = make_mention_bridge()
+    update = make_update(
+        chat_type="group",
+        rich_message=rich_message(
+            {"type": "mention", "username": "echo_bot", "text": "@echo_bot"},
+            " alo",
+        ),
+    )
+    await bridge.new_session(update, make_context())
+    await bridge.on_message(update, make_context())
+
+    assert update.message is not None
+    assert update.message.replies[-1].endswith(EXPECTED_ECHO_SUFFIX)
+
+
+async def test_group_rich_message_with_plain_text_mention_is_answered():
+    bridge = make_mention_bridge()
+    update = make_update(chat_type="group", rich_message=rich_message("@echo_bot alo"))
+    await bridge.new_session(update, make_context())
+    await bridge.on_message(update, make_context())
+
+    assert update.message is not None
+    assert update.message.replies[-1].endswith(EXPECTED_ECHO_SUFFIX)
+
+
+async def test_group_rich_message_without_mention_is_ignored():
+    bridge = make_mention_bridge()
+    update = make_update(
+        chat_type="group",
+        rich_message=rich_message({"type": "mention", "username": "other_bot", "text": "@other_bot"}, " alo"),
+    )
+    await bridge.new_session(update, make_context())
+    await bridge.on_message(update, make_context())
+
+    assert_not_answered(update)
+
+
+async def test_rich_message_filter_only_matches_rich_messages():
+    rich = make_update(chat_type="group", rich_message=rich_message("hello")).message
+    plain = make_update(text="hello", chat_type="group").message
+
+    assert rich is not None and _RICH_MESSAGE.filter(rich)
+    assert plain is not None and not _RICH_MESSAGE.filter(plain)
 
 
 async def test_group_reply_to_bot_message_is_answered():
